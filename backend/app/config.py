@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     ollama_port: int = 11434
     ollama_model: str = "qwen2.5:1.5b"
 
+    # VK Bot
+    vk_bot_token: str = "YOUR_VK_BOT_TOKEN"
+    vk_user_id: int = 0  # замените на ваш VK ID
+    vk_api_version: str = "5.199"
     # Составной URL
     ollama_base_url: str = ""
 
@@ -37,18 +41,10 @@ class Settings(BaseSettings):
     # App
     app_debug: bool = False
 
-    # ─── Ставки по накопительным счетам (гибко) ────────────────────────
-    SAVINGS_RATES = {
-        "default": 7.0,               # базовая ставка, % годовых
-        "2026-04": 11.5,              # пример пере‑ставки
-        # добавить другие месяцы при необходимости
-    }
+    # Данные карты
+    target_spend_for_bonus: float = 100000.0
 
-    def get_current_rate() -> float:
-        """Возвращает ставку для текущего месяца, либо значение по умолчанию."""
-        from datetime import datetime
-        month_key = datetime.now().strftime("%Y-%m")
-        return SAVINGS_RATES.get(month_key, SAVINGS_RATES["default"]) 
+
 
 
     def model_post_init(self, __context) -> None:
@@ -104,3 +100,16 @@ CREDIT_MIR = "7600"
 DEBIT_MAIN = "6517"
 DEBIT_STICKER = "7757"
 SAVINGS_ACC = "1837"
+
+# ─── Ставки по накопительным счетам (гибко) ────────────────────────
+SAVINGS_RATES = {
+    "default": 7.0,               # базовая ставка, % годовых
+    "2026-04": 11.5,              # пример пере‑ставки
+    # добавить другие месяцы при необходимости
+}
+
+def get_current_rate() -> float:
+    """Возвращает ставку для текущего месяца, либо значение по умолчанию."""
+    from datetime import datetime
+    month_key = datetime.now().strftime("%Y-%m")
+    return SAVINGS_RATES.get(month_key, SAVINGS_RATES["default"])

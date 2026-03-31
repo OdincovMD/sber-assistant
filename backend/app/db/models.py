@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime, date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import (
     Column, Integer, String, Numeric, DateTime, Date, Float,
@@ -88,6 +88,18 @@ class DailyYield(Base):
     earned_amount = Column(Numeric(12, 2), nullable=False, comment="Заработанная сумма")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    @staticmethod
+    def calculate_daily_yield(current_balance: Decimal) -> Decimal:
+        """
+        Рассчитать ежедневную прибыль по накопительному счёту.
+        Формула: баланс * (ставка / 100) / 365.
+        Округление до 2 знаков после запятой.
+        """
+        from app.config import get_current_rate
+        rate = Decimal(str(get_current_rate()))
+        daily = (current_balance * (rate / Decimal("100")) / Decimal("365"))
+        return daily.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     def __repr__(self) -> str:
         return (

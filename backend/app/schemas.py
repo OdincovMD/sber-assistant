@@ -67,9 +67,17 @@ class BonusStatusResponse(BaseModel):
     progress_percent: float
 
 
+class SpendingStatsResponse(BaseModel):
+    """Статистика реальных трат (без переводов себе)."""
+    daily: float
+    weekly: float
+    monthly: float
+
+
 class FinancialSummaryResponse(BaseModel):
     """Полная финансовая сводка."""
     available_limit: float
     credit_limit: float
     bonus_status: BonusStatusResponse
     open_periods: list[dict]
+    spending_stats: SpendingStatsResponse

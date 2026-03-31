@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import AsyncORM
 from app.config import get_settings
 from app.services.credit_logic import CreditCardService
+from app.schemas import FinancialSummaryResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/finance", tags=["finance"])
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/api/finance", tags=["finance"])
 settings = get_settings()
 
 
-@router.get("/summary")
+@router.get("/summary", response_model=FinancialSummaryResponse)
 async def get_summary(db: AsyncSession = Depends(AsyncORM.get_db)):
     """Полная финансовая сводка."""
     return await CreditCardService.get_financial_summary(db)

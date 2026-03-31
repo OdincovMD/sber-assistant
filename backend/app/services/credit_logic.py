@@ -47,8 +47,6 @@ class GraceUnsafeAlarm:
             f"   Тип: {transaction_type}\n"
             f"   Снятие наличных / перевод / комиссия — грейс аннулирован!"
         )
-        # TODO: Celery task → Telegram notification
-        # TODO: Redis pub/sub event
 
 
 class CreditCardService:
@@ -134,6 +132,11 @@ class CreditCardService:
             logger.info(f"Транзакция {transaction_id}: не расход или нет суммы — пропуск")
             return None
 
+        transaction = await AsyncORM.get_transaction_by_id(session, transaction_id)
+        if not transaction or transaction.account_type != "credit":
+            logger.info(f"Транзакция {transaction_id}: не кредитная ({getattr(transaction, 'account_type', 'none')}) — пропуск грейс-логики")
+            return None
+
         tx_date = transaction_date or date.today()
         billing_month = cls.get_billing_month(tx_date)
         grace_deadline = cls.calculate_grace_deadline(tx_date)
@@ -144,11 +147,9 @@ class CreditCardService:
         )
 
         # 2. Привязываем транзакцию к периоду
-        transaction = await AsyncORM.get_transaction_by_id(session, transaction_id)
-        if transaction:
-            transaction.billing_period_id = period.id
-            transaction.grace_deadline = grace_deadline
-            await session.flush()
+        transaction.billing_period_id = period.id
+        transaction.grace_deadline = grace_deadline
+        await session.flush()
 
         # 3. Обновляем total_spent периода
         current_total = await AsyncORM.get_month_expenses_total(session, billing_month)
@@ -241,6 +242,45 @@ class CreditCardService:
 
         return result
 
+    # ─── Статистика трат ────────────────────────────────────────
+
+    @classmethod
+    async def get_spending_statistics(cls, session: AsyncSession, account_type: Optional[str] = None) -> dict:
+        """
+        Статистика реальных трат (Ежедневно, Еженедельно, Ежемесячно).
+        Исключает внутренние переводы (Перевод между счетами).
+        """
+        from datetime import datetime, time, timedelta
+
+        # Локальное время для расчета границ периода
+        now = datetime.now()
+        
+        # Сегодня: с 00:00:00 до 23:59:59
+        today_start = datetime.combine(now.date(), time.min)
+        today_end = datetime.combine(now.date(), time.max)
+        
+        # Неделя: с понедельника до конца воскресенья
+        week_start = today_start - timedelta(days=now.weekday())
+        week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
+        
+        # Месяц: с 1-го числа до конца текущего месяца
+        month_start = today_start.replace(day=1)
+        if month_start.month == 12:
+            next_month_start = month_start.replace(year=month_start.year + 1, month=1, day=1)
+        else:
+            next_month_start = month_start.replace(month=month_start.month + 1, day=1)
+        month_end = next_month_start - timedelta(microseconds=1)
+
+        daily = await AsyncORM.get_real_expenses_for_period(session, today_start, today_end, account_type)
+        weekly = await AsyncORM.get_real_expenses_for_period(session, week_start, week_end, account_type)
+        monthly = await AsyncORM.get_real_expenses_for_period(session, month_start, month_end, account_type)
+
+        return {
+            "daily": abs(float(daily)),
+            "weekly": abs(float(weekly)),
+            "monthly": abs(float(monthly)),
+        }
+
     # ─── Сводка ─────────────────────────────────────────────────
 
     @classmethod
@@ -259,6 +299,7 @@ class CreditCardService:
         available = await cls.get_available_limit(session)
         bonus = await cls.get_bonus_target_status(session)
         open_periods = await AsyncORM.get_open_billing_periods(session)
+        spending_stats = await cls.get_spending_statistics(session)
 
         periods_data = [
             {
@@ -275,4 +316,5 @@ class CreditCardService:
             "credit_limit": settings.credit_limit,
             "bonus_status": bonus,
             "open_periods": periods_data,
+            "spending_stats": spending_stats,
         }
