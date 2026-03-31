@@ -49,9 +49,12 @@ async def receive_sms(data: SmsWebhookRequest, db: AsyncSession = Depends(AsyncO
         await AsyncORM.update_transaction_parsed(
             db,
             transaction,
+            card_tail=parsed_result.card_tail,
+            account_type=parsed_result.account_type,
             amount=parsed_result.amount,
             transaction_type=TYPE_MAPPING.get(parsed_result.type, TransactionType.UNKNOWN),
             merchant=parsed_result.merchant,
+            category=parsed_result.category,
             is_grace_safe=parsed_result.is_grace_safe,
             is_expense=parsed_result.is_expense,
             balance_after=parsed_result.balance_after,
@@ -63,9 +66,11 @@ async def receive_sms(data: SmsWebhookRequest, db: AsyncSession = Depends(AsyncO
         expense_label = "EXPENSE" if parsed_result.is_expense else "INCOME"
         logger.info(
             f"[{expense_label}] Парсинг OK: {parsed_result.amount}₽ | "
+            f"карта={parsed_result.card_tail} ({parsed_result.account_type}) | "
             f"тип={parsed_result.type} | мерчант={parsed_result.merchant} | "
+            f"категория={parsed_result.category} | "
             f"расход={parsed_result.is_expense} | грейс={parsed_result.is_grace_safe} | "
-            f"баланс={parsed_result.balance_after} | карта={parsed_result.card}"
+            f"баланс={parsed_result.balance_after}"
         )
 
         # 4. Финансовая логика — привязка к BillingPeriod

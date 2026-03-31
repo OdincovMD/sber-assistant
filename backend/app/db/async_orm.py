@@ -121,9 +121,12 @@ class AsyncORM:
         session: AsyncSession,
         transaction: Transaction,
         *,
+        card_tail: Optional[str] = None,
+        account_type: Optional[str] = None,
         amount: Optional[Decimal] = None,
         transaction_type: TransactionType = TransactionType.UNKNOWN,
         merchant: Optional[str] = None,
+        category: Optional[str] = None,
         is_grace_safe: Optional[bool] = None,
         is_expense: Optional[bool] = None,
         balance_after: Optional[Decimal] = None,
@@ -133,10 +136,13 @@ class AsyncORM:
         raw_llm_response: Optional[str] = None,
         is_parsed: bool = False,
     ) -> Transaction:
-        """Обновить транзакцию результатами парсинга LLM."""
+        """Обновить транзакцию результатами парсинга LLM (v2 — с маршрутизацией по счетам)."""
+        transaction.card_tail = card_tail
+        transaction.account_type = account_type
         transaction.amount = amount
         transaction.transaction_type = transaction_type
         transaction.merchant = merchant
+        transaction.category = category
         transaction.is_grace_safe = is_grace_safe
         transaction.is_expense = is_expense
         transaction.balance_after = balance_after

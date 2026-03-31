@@ -33,54 +33,61 @@ SYSTEM_PROMPT = """\
 
 2. ОБЯЗАТЕЛЬНЫЕ ПОЛЯ в JSON:
 {
+  "card_tail": "<последние 4 цифры карты/счёта>",
+  "account_type": "<credit | debit | savings>",
   "amount": <число или null>,
-  "type": "<тип>",
   "merchant": "<название или null>",
+  "category": "<категория операции>",
   "is_expense": <true/false>,
-  "is_grace_safe": <true/false>,
-  "balance_after": <число или null>,
-  "card": "<маска карты или null>"
+  "balance_after": <число или null>
 }
 
 ═══════════════════════════════════════════
-КЛАССИФИКАЦИЯ type:
+МАРШРУТИЗАЦИЯ ПО СЧЕТАМ (КРИТИЧНО!):
 ═══════════════════════════════════════════
 
-- "purchase"    → Покупка в магазине/онлайн/оплата услуг.
-                  Ключевые слова: "Покупка", "Оплата", "OPLATA"
-- "payment"     → Списание через платёжную систему или код подтверждения.
-                  Ключевые слова: "Списание", "Никому не сообщайте код"
-- "transfer"    → Перевод между счетами/картами или другому человеку.
-                  Ключевые слова: "Перевод", "на СЧЁТ", "на карту"
-- "deposit"     → Зачисление средств (зарплата, кэшбек, возврат, проценты).
-                  Ключевые слова: "Зачисление", "Зачисление средств"
-- "withdrawal"  → Снятие наличных в банкомате.
-                  Ключевые слова: "Выдача", "Снятие", "ATM"
-- "fee"         → Комиссия банка, плата за услугу.
-                  Ключевые слова: "Комиссия", "Плата за"
-- "unknown"     → Не удалось определить тип.
+★ МИР7600 или просто 7600 → card_tail: "7600", account_type: "credit"
+  Кредитная карта, лимит 150 000₽
+
+★ ECMC6517 или 6517 → card_tail: "6517", account_type: "debit"
+  Дебетовая карта
+
+★ МИР7757 или 7757 → card_tail: "7757", account_type: "debit"
+  Дебетовый платёжный стикер
+
+★ Накопительный счет *1837 или *1837 → card_tail: "1837", account_type: "savings"
+  Накопительный счёт
+
+Если в тексте упоминаются СЧЁТ9103 или другие счета — это промежуточные счета,
+определяй card_tail по ОСНОВНОЙ карте/счёту, с которого или на который идёт операция.
+
+═══════════════════════════════════════════
+КАТЕГОРИИ:
+═══════════════════════════════════════════
+
+Используй одну из категорий:
+- "Продукты" — PYATEROCHKA, PEREKRESTOK, MAGNIT и т.п.
+- "Здоровье" — APTEKA, STOMATOLOG, клиники
+- "Транспорт" — Метро, такси, топливо
+- "Рестораны" — кафе, рестораны, фастфуд
+- "Образование" — MIFI, NIYAU, вузы, курсы
+- "Онлайн-сервисы" — NLK, подписки, стриминг
+- "Платёжные системы" — NETMONET, SBP переводы
+- "Перевод между счетами" — переводы между своими счетами
+- "Зачисление" — зарплата, кэшбек, возврат, проценты
+- "Снятие наличных" — ATM, банкоматы
+- "Комиссия" — банковские комиссии
+- "Другое" — если не подходит ни одна
 
 ═══════════════════════════════════════════
 ПРАВИЛА is_expense (расход или доход):
 ═══════════════════════════════════════════
 
 is_expense = true  → деньги УШЛИ со счёта/карты:
-  purchase, payment, transfer (с карты/счёта), withdrawal, fee
+  покупки, оплаты, списания, переводы (со счёта), снятие наличных, комиссии
 
 is_expense = false → деньги ПРИШЛИ на счёт/карту:
-  deposit, transfer (зачисление на счёт)
-
-═══════════════════════════════════════════
-ПРАВИЛА is_grace_safe (грейс-период):
-═══════════════════════════════════════════
-
-is_grace_safe = true  → операция ВХОДИТ в грейс-период кредитной карты:
-  purchase (любые покупки и оплаты)
-
-is_grace_safe = false → операция НЕ входит в грейс:
-  payment (списания через NETMONET и т.п.), transfer, withdrawal, fee
-
-Для deposit → is_grace_safe = true (не влияет на грейс, это приход)
+  зачисления, возвраты, переводы (на счёт)
 
 ═══════════════════════════════════════════
 ОСОБЫЕ СЛУЧАИ (ВАЖНО!):
@@ -89,56 +96,59 @@ is_grace_safe = false → операция НЕ входит в грейс:
 ★ СМС с кодом подтверждения:
   "Никому не сообщайте код XXXX Списание NNNNр с ECMCXXXX МЕРЧАНТ"
   → Это РЕАЛЬНОЕ списание! Игнорируй текст про код.
-  → type: "payment", is_expense: true, merchant: "МЕРЧАНТ"
+  → is_expense: true, merchant: "МЕРЧАНТ"
 
 ★ Оплата услуг вуза/организации:
   "Покупка 7050р OPLATA USLUG NIYAU MIFI"
-  → type: "purchase", merchant: "NIYAU MIFI" (убери "OPLATA USLUG")
+  → merchant: "NIYAU MIFI" (убери "OPLATA USLUG"), category: "Образование"
 
 ★ Перевод между своими счетами:
   "Накопительный счет *1837 Перевод 2500р на СЧЁТ9103"
-  → type: "transfer", is_expense: true, merchant: "СЧЁТ9103"
+  → card_tail: "1837", account_type: "savings", is_expense: true,
+    category: "Перевод между счетами"
 
 ★ Зачисление на счёт:
   "СЧЁТ9103 Зачисление средств 50067.12р на счёт Накопительный счет *1837"
-  → type: "deposit", is_expense: false, merchant: "Накопительный счет *1837"
+  → card_tail: "1837", account_type: "savings", is_expense: false,
+    category: "Зачисление"
 
 ★ balance_after — баланс ПОСЛЕ операции:
   Если в СМС есть "Баланс: 63377.02р" → balance_after: 63377.02
   Если баланса нет → balance_after: null
-
-★ card — маска карты/счёта:
-  "ECMC6517" → card: "ECMC6517"
-  "СЧЁТ9103" → card: "СЧЁТ9103"
-  "*1837" → card: "*1837"
 
 ═══════════════════════════════════════════
 ПРИМЕРЫ (вход → выход):
 ═══════════════════════════════════════════
 
 СМС: "Счёт карты ECMC6517 12:08 Покупка 800р STOMATOLOG Баланс: 63 377.02р"
-→ {"amount": 800, "type": "purchase", "merchant": "STOMATOLOG", "is_expense": true, "is_grace_safe": true, "balance_after": 63377.02, "card": "ECMC6517"}
-
-СМС: "Счёт карты ECMC6517 17:17 Покупка 7050р OPLATA USLUG NIYAU MIFI Баланс: 21 381.86р"
-→ {"amount": 7050, "type": "purchase", "merchant": "NIYAU MIFI", "is_expense": true, "is_grace_safe": true, "balance_after": 21381.86, "card": "ECMC6517"}
-
-СМС: "Никому не сообщайте код 1414 Списание 6912р с ECMC6517 NETMONET"
-→ {"amount": 6912, "type": "payment", "merchant": "NETMONET", "is_expense": true, "is_grace_safe": false, "balance_after": null, "card": "ECMC6517"}
-
-СМС: "Никому не сообщайте код 6144 Списание 985р с ECMC6517 Метро"
-→ {"amount": 985, "type": "payment", "merchant": "Метро", "is_expense": true, "is_grace_safe": false, "balance_after": null, "card": "ECMC6517"}
-
-СМС: "Счёт карты ECMC6517 16:05 Покупка 170р NLK Баланс: 6093.70р"
-→ {"amount": 170, "type": "purchase", "merchant": "NLK", "is_expense": true, "is_grace_safe": true, "balance_after": 6093.70, "card": "ECMC6517"}
-
-СМС: "СЧЁТ9103 Зачисление средств 50 067.12р на счёт Накопительный счет *1837. Баланс *9103: 7745.56р."
-→ {"amount": 50067.12, "type": "deposit", "merchant": "Накопительный счет *1837", "is_expense": false, "is_grace_safe": true, "balance_after": 7745.56, "card": "СЧЁТ9103"}
-
-СМС: "Накопительный счет *1837 08:54 Перевод 2500р на СЧЁТ9103. Баланс *9103: 5954.69р"
-→ {"amount": 2500, "type": "transfer", "merchant": "СЧЁТ9103", "is_expense": true, "is_grace_safe": false, "balance_after": 5954.69, "card": "*1837"}
+→ {"card_tail": "6517", "account_type": "debit", "amount": 800.0, "merchant": "STOMATOLOG", "category": "Здоровье", "is_expense": true, "balance_after": 63377.02}
 
 СМС: "Счёт карты ECMC6517 14:25 Покупка 800р APTEKA Баланс: 15 278.63р"
-→ {"amount": 800, "type": "purchase", "merchant": "APTEKA", "is_expense": true, "is_grace_safe": true, "balance_after": 15278.63, "card": "ECMC6517"}
+→ {"card_tail": "6517", "account_type": "debit", "amount": 800.0, "merchant": "APTEKA", "category": "Здоровье", "is_expense": true, "balance_after": 15278.63}
+
+СМС: "Счёт карты ECMC6517 17:17 Покупка 7050р OPLATA USLUG NIYAU MIFI Баланс: 21 381.86р"
+→ {"card_tail": "6517", "account_type": "debit", "amount": 7050.0, "merchant": "NIYAU MIFI", "category": "Образование", "is_expense": true, "balance_after": 21381.86}
+
+СМС: "Никому не сообщайте код 1414 Списание 6912р с ECMC6517 NETMONET"
+→ {"card_tail": "6517", "account_type": "debit", "amount": 6912.0, "merchant": "NETMONET", "category": "Платёжные системы", "is_expense": true, "balance_after": null}
+
+СМС: "Никому не сообщайте код 6144 Списание 985р с ECMC6517 Метро"
+→ {"card_tail": "6517", "account_type": "debit", "amount": 985.0, "merchant": "Метро", "category": "Транспорт", "is_expense": true, "balance_after": null}
+
+СМС: "Счёт карты ECMC6517 16:05 Покупка 170р NLK Баланс: 6093.70р"
+→ {"card_tail": "6517", "account_type": "debit", "amount": 170.0, "merchant": "NLK", "category": "Онлайн-сервисы", "is_expense": true, "balance_after": 6093.70}
+
+СМС: "СЧЁТ9103 Зачисление средств 50 067.12р на счёт Накопительный счет *1837. Баланс *9103: 7745.56р."
+→ {"card_tail": "1837", "account_type": "savings", "amount": 50067.12, "merchant": "СЧЁТ9103", "category": "Зачисление", "is_expense": false, "balance_after": 7745.56}
+
+СМС: "Накопительный счет *1837 08:54 Перевод 2500р на СЧЁТ9103. Баланс *9103: 5954.69р"
+→ {"card_tail": "1837", "account_type": "savings", "amount": 2500.0, "merchant": "СЧЁТ9103", "category": "Перевод между счетами", "is_expense": true, "balance_after": 5954.69}
+
+СМС: "МИР7600 15:30 Покупка 3200р PYATEROCHKA Баланс: 146 800.00р"
+→ {"card_tail": "7600", "account_type": "credit", "amount": 3200.0, "merchant": "PYATEROCHKA", "category": "Продукты", "is_expense": true, "balance_after": 146800.0}
+
+СМС: "МИР7757 09:15 Покупка 250р KOFE Баланс: 12 300.50р"
+→ {"card_tail": "7757", "account_type": "debit", "amount": 250.0, "merchant": "KOFE", "category": "Рестораны", "is_expense": true, "balance_after": 12300.50}
 """
 
 
@@ -210,9 +220,9 @@ class OllamaClient:
             if parsed:
                 result = OllamaParseResult(**parsed)
                 logger.info(
-                    f"Parsed: {result.amount}₽ | {result.type} | "
-                    f"{result.merchant} | expense={result.is_expense} | "
-                    f"grace_safe={result.is_grace_safe}"
+                    f"Parsed: {result.card_tail} ({result.account_type}) | "
+                    f"{result.amount}₽ | {result.merchant} | "
+                    f"cat={result.category} | expense={result.is_expense}"
                 )
                 return result, raw_response
 

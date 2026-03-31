@@ -1,8 +1,16 @@
 from datetime import datetime, date
 from decimal import Decimal
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+
+class AccountType(str, Enum):
+    """Тип банковского счёта/карты."""
+    CREDIT = "credit"
+    DEBIT = "debit"
+    SAVINGS = "savings"
 
 
 # ─── Request ───────────────────────────────────────────────────
@@ -15,16 +23,18 @@ class SmsWebhookRequest(BaseModel):
 # ─── Ollama ────────────────────────────────────────────────────
 
 class OllamaParseResult(BaseModel):
-    """Результат парсинга СМС через Ollama LLM."""
+    """Результат парсинга СМС через Ollama LLM (v2 — мульти-аккаунт)."""
+    card_tail: Optional[str] = Field(None, description="Последние 4 цифры карты/счёта (7600, 6517, 7757, 1837)")
+    account_type: Optional[str] = Field(None, description="Тип счёта: credit / debit / savings")
     amount: Optional[Decimal] = Field(None, description="Сумма транзакции")
-    type: Optional[str] = Field(
-        None,
-        description="Тип: purchase / payment / transfer / deposit / withdrawal / fee / unknown",
-    )
     merchant: Optional[str] = Field(None, description="Получатель / мерчант / источник")
-    is_expense: Optional[bool] = Field(None, description="True = расход, False = доход")
-    is_grace_safe: Optional[bool] = Field(None, description="Безопасна ли для грейс-периода")
+    category: Optional[str] = Field(None, description="Категория операции (Продукты, Здоровье, Перевод между счетами, ...)")
+    is_expense: Optional[bool] = Field(None, description="True = расход (списание), False = доход (пополнение)")
     balance_after: Optional[Decimal] = Field(None, description="Баланс после операции")
+
+    # Обратная совместимость (legacy-поля, заполняются из card_tail + account_type)
+    type: Optional[str] = Field(None, description="Тип: purchase / payment / transfer / deposit / withdrawal / fee / unknown")
+    is_grace_safe: Optional[bool] = Field(None, description="Безопасна ли для грейс-периода")
     card: Optional[str] = Field(None, description="Маска карты/счёта (ECMC6517, СЧЁТ9103, *1837)")
 
 

@@ -37,9 +37,19 @@ class Settings(BaseSettings):
     # App
     app_debug: bool = False
 
-    # ─── Финансовые константы (Кредитная карусель) ───────────────
-    credit_limit: float = 150_000.0
-    target_spend_for_bonus: float = 50_000.0
+    # ─── Ставки по накопительным счетам (гибко) ────────────────────────
+    SAVINGS_RATES = {
+        "default": 7.0,               # базовая ставка, % годовых
+        "2026-04": 11.5,              # пример пере‑ставки
+        # добавить другие месяцы при необходимости
+    }
+
+    def get_current_rate() -> float:
+        """Возвращает ставку для текущего месяца, либо значение по умолчанию."""
+        from datetime import datetime
+        month_key = datetime.now().strftime("%Y-%m")
+        return SAVINGS_RATES.get(month_key, SAVINGS_RATES["default"]) 
+
 
     def model_post_init(self, __context) -> None:
         """Собираем составные URL из компонентов, если не заданы явно."""
@@ -62,3 +72,35 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Кешированный синглтон настроек."""
     return Settings()
+
+
+# ─── Словарь счетов (Константы) ────────────────────────────────────
+# Маппинг последних 4 цифр карт/счетов → тип и метаданные
+ACCOUNTS = {
+    "7600": {
+        "type": "credit",
+        "name": "Кредитная карта МИР",
+        "limit": 150_000.0,
+    },
+    "6517": {
+        "type": "debit",
+        "name": "Дебетовая карта ECMC",
+        "limit": None,
+    },
+    "7757": {
+        "type": "debit",
+        "name": "Дебетовый платёжный стикер МИР",
+        "limit": None,
+    },
+    "1837": {
+        "type": "savings",
+        "name": "Накопительный счёт",
+        "limit": None,
+    },
+}
+
+# Быстрый доступ по хвостам
+CREDIT_MIR = "7600"
+DEBIT_MAIN = "6517"
+DEBIT_STICKER = "7757"
+SAVINGS_ACC = "1837"

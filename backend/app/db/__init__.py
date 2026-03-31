@@ -1,4 +1,4 @@
-from app.db.models import Base, Transaction, BillingPeriod, TransactionType
+from app.db.models import Base, Transaction, BillingPeriod, TransactionType, AccountType, DailyYield
 from app.db.async_orm import AsyncORM
 
 __all__ = [
@@ -6,5 +6,8 @@ __all__ = [
     "Transaction",
     "BillingPeriod",
     "TransactionType",
+    "AccountType",
+    "DailyYield",
     "AsyncORM",
 ]
+
