@@ -41,12 +41,9 @@ class OllamaParseResult(BaseModel):
 # ─── Response ──────────────────────────────────────────────────
 
 class SmsWebhookResponse(BaseModel):
-    """Ответ на вебхук."""
-    status: str = "received"
+    """Ответ на вебхук. Обработка происходит асинхронно в Celery."""
+    status: str = "queued"
     transaction_id: Optional[int] = None
-    parsed_data: Optional[OllamaParseResult] = None
-    grace_deadline: Optional[str] = None
-    billing_month: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

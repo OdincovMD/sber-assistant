@@ -56,7 +56,7 @@ POSTGRES_PORT=5432
 |------------|--------------|-----|---------|
 | `OLLAMA_HOST` | `ollama` | string | Имя хоста (Docker сервис) |
 | `OLLAMA_PORT` | `11434` | integer | Порт Ollama API |
-| `OLLAMA_MODEL` | `qwen2.5:0.5b` | string | Модель LLM для парсинга |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b` | string | Модель LLM для парсинга |
 
 ### Составная переменная (в коде)
 
@@ -80,7 +80,7 @@ make ollama-pull  # Скачает модель из OLLAMA_MODEL
 ```bash
 OLLAMA_HOST=ollama
 OLLAMA_PORT=11434
-OLLAMA_MODEL=qwen2.5:0.5b
+OLLAMA_MODEL=qwen2.5:1.5b
 
 # Результат:
 # OLLAMA_BASE_URL = http://ollama:11434
@@ -328,7 +328,7 @@ POSTGRES_PORT=5432
 # ========== Ollama ==========
 OLLAMA_HOST=ollama
 OLLAMA_PORT=11434
-OLLAMA_MODEL=qwen2.5:0.5b
+OLLAMA_MODEL=qwen2.5:1.5b
 
 # ========== VK Интеграция ==========
 VK_BOT_TOKEN=vk1.a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
