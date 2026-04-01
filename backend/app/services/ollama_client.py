@@ -52,9 +52,6 @@ SYSTEM_PROMPT = """\
 ★ ECMC6517 или 6517 → card_tail: "6517", account_type: "debit"
   Дебетовая карта
 
-★ МИР7757 или 7757 → card_tail: "7757", account_type: "debit"
-  Дебетовый платёжный стикер
-
 ★ Накопительный счет *1837 или *1837 → card_tail: "1837", account_type: "savings"
   Накопительный счёт
 
@@ -123,17 +120,8 @@ is_expense = false → деньги ПРИШЛИ на счёт/карту:
 СМС: "Счёт карты ECMC6517 12:08 Покупка 800р STOMATOLOG Баланс: 63 377.02р"
 → {"card_tail": "6517", "account_type": "debit", "amount": 800.0, "merchant": "STOMATOLOG", "category": "Здоровье", "is_expense": true, "balance_after": 63377.02}
 
-СМС: "Счёт карты ECMC6517 14:25 Покупка 800р APTEKA Баланс: 15 278.63р"
-→ {"card_tail": "6517", "account_type": "debit", "amount": 800.0, "merchant": "APTEKA", "category": "Здоровье", "is_expense": true, "balance_after": 15278.63}
-
-СМС: "Счёт карты ECMC6517 17:17 Покупка 7050р OPLATA USLUG NIYAU MIFI Баланс: 21 381.86р"
-→ {"card_tail": "6517", "account_type": "debit", "amount": 7050.0, "merchant": "NIYAU MIFI", "category": "Образование", "is_expense": true, "balance_after": 21381.86}
-
 СМС: "Никому не сообщайте код 1414 Списание 6912р с ECMC6517 NETMONET"
 → {"card_tail": "6517", "account_type": "debit", "amount": 6912.0, "merchant": "NETMONET", "category": "Платёжные системы", "is_expense": true, "balance_after": null}
-
-СМС: "Никому не сообщайте код 6144 Списание 985р с ECMC6517 Метро"
-→ {"card_tail": "6517", "account_type": "debit", "amount": 985.0, "merchant": "Метро", "category": "Транспорт", "is_expense": true, "balance_after": null}
 
 СМС: "Счёт карты ECMC6517 16:05 Покупка 170р NLK Баланс: 6093.70р"
 → {"card_tail": "6517", "account_type": "debit", "amount": 170.0, "merchant": "NLK", "category": "Онлайн-сервисы", "is_expense": true, "balance_after": 6093.70}
@@ -146,9 +134,6 @@ is_expense = false → деньги ПРИШЛИ на счёт/карту:
 
 СМС: "МИР7600 15:30 Покупка 3200р PYATEROCHKA Баланс: 146 800.00р"
 → {"card_tail": "7600", "account_type": "credit", "amount": 3200.0, "merchant": "PYATEROCHKA", "category": "Продукты", "is_expense": true, "balance_after": 146800.0}
-
-СМС: "МИР7757 09:15 Покупка 250р KOFE Баланс: 12 300.50р"
-→ {"card_tail": "7757", "account_type": "debit", "amount": 250.0, "merchant": "KOFE", "category": "Рестораны", "is_expense": true, "balance_after": 12300.50}
 """
 
 

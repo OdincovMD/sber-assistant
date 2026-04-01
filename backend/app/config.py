@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_host: str = "ollama"
     ollama_port: int = 11434
-    ollama_model: str = "qwen2.5:1.5b"
+    ollama_model: str = "qwen2.5:0.5b"
 
     # VK Bot
     vk_bot_token: str = "YOUR_VK_BOT_TOKEN"
@@ -42,7 +42,12 @@ class Settings(BaseSettings):
     app_debug: bool = False
 
     # Данные карты
-    target_spend_for_bonus: float = 100000.0
+    credit_limit: float = 150000.0  # Кредитный лимит МИР карты
+    target_spend_for_bonus: float = 100000.0  # Порог трат для бонуса
+
+    # Лимиты по счетам
+    debit_monthly_limit: float = 50000.0  # Месячный лимит дебетовой карты
+    savings_min_balance: float = 10000.0  # Минимальный остаток для льготной ставки
 
 
 

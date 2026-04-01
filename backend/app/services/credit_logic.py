@@ -110,10 +110,10 @@ class CreditCardService:
         merchant: Optional[str],
         transaction_type: str,
         transaction_date: Optional[date] = None,
-    ) -> Optional[BillingPeriod]:
+    ) -> dict:
         """
         Обработать распарсенную транзакцию — привязать к BillingPeriod,
-        обновить total_spent, проверить grace safety.
+        обновить total_spent, проверить grace safety и лимиты.
 
         Args:
             session: Async DB session
@@ -126,16 +126,72 @@ class CreditCardService:
             transaction_date: Дата транзакции (по умолчанию — сегодня)
 
         Returns:
-            BillingPeriod, к которому привязана транзакция (или None для доходов).
+            {
+                "success": bool,
+                "billing_period": BillingPeriod | None,
+                "warnings": list[str],
+                "errors": list[str],
+            }
         """
+        warnings = []
+        errors = []
+
+        if amount is not None and amount < 0:
+            errors.append(f"Отрицательная сумма: {amount}₽")
+            return {"success": False, "billing_period": None, "warnings": warnings, "errors": errors}
+
         if not is_expense or amount is None:
             logger.info(f"Транзакция {transaction_id}: не расход или нет суммы — пропуск")
-            return None
+            return {"success": True, "billing_period": None, "warnings": ["Не расход или пустая сумма"], "errors": []}
 
         transaction = await AsyncORM.get_transaction_by_id(session, transaction_id)
-        if not transaction or transaction.account_type != "credit":
-            logger.info(f"Транзакция {transaction_id}: не кредитная ({getattr(transaction, 'account_type', 'none')}) — пропуск грейс-логики")
-            return None
+        if not transaction:
+            errors.append(f"Транзакция {transaction_id} не найдена")
+            return {"success": False, "billing_period": None, "warnings": warnings, "errors": errors}
+
+        # Обработка разных типов счётов
+        if transaction.account_type == "credit":
+            return await cls._process_credit_transaction(
+                session, transaction, transaction_id, amount, is_grace_safe, merchant, transaction_type, transaction_date
+            )
+        elif transaction.account_type == "debit":
+            return await cls._process_debit_transaction(
+                session, transaction, transaction_id, amount, merchant, transaction_type, transaction_date
+            )
+        elif transaction.account_type == "savings":
+            logger.info(f"Транзакция {transaction_id}: накопительный счёт — только отслеживание баланса")
+            return {"success": True, "billing_period": None, "warnings": ["Накопительный счет — не требует обработки"], "errors": []}
+        else:
+            errors.append(f"Неизвестный тип счёта: {transaction.account_type}")
+            return {"success": False, "billing_period": None, "warnings": warnings, "errors": errors}
+
+    @classmethod
+    async def _process_credit_transaction(
+        cls,
+        session: AsyncSession,
+        transaction,
+        transaction_id: int,
+        amount: Decimal,
+        is_grace_safe: Optional[bool],
+        merchant: Optional[str],
+        transaction_type: str,
+        transaction_date: Optional[date] = None,
+    ) -> dict:
+        """Обработка транзакции по кредитной карте."""
+        warnings = []
+        errors = []
+
+        # Проверка платежа (снижение задолженности)
+        if transaction_type == "payment":
+            return await cls._process_payment(session, transaction, transaction_id, amount)
+
+        # Проверка лимита
+        available = await cls.get_available_limit(session)
+        if amount > available:
+            msg = f"Превышение лимита: попытка потратить {amount}₽, доступно {available}₽"
+            errors.append(msg)
+            logger.warning(f"Транзакция {transaction_id}: {msg}")
+            return {"success": False, "billing_period": None, "warnings": warnings, "errors": errors}
 
         tx_date = transaction_date or date.today()
         billing_month = cls.get_billing_month(tx_date)
@@ -168,8 +224,96 @@ class CreditCardService:
                 merchant=merchant,
                 transaction_type=transaction_type,
             )
+            warnings.append(f"ВНИМАНИЕ: операция может аннулировать грейс-период!")
 
-        return period
+        return {"success": True, "billing_period": period, "warnings": warnings, "errors": []}
+
+    @classmethod
+    async def _process_debit_transaction(
+        cls,
+        session: AsyncSession,
+        transaction,
+        transaction_id: int,
+        amount: Decimal,
+        merchant: Optional[str],
+        transaction_type: str,
+        transaction_date: Optional[date] = None,
+    ) -> dict:
+        """Обработка транзакции по дебетовой карте с проверкой бюджета."""
+        warnings = []
+        errors = []
+
+        category = transaction.category or "Прочие"
+        tx_date = transaction_date or date.today()
+        billing_month = cls.get_billing_month(tx_date)
+
+        # Проверка лимита по категории
+        category_limit = await AsyncORM.get_budget_limit(session, category)
+        if category_limit:
+            month_spent = await AsyncORM.get_month_category_expenses(session, category, billing_month)
+            remaining = category_limit.monthly_limit - month_spent
+
+            if amount > remaining:
+                msg = f"Превышение бюджета по категории '{category}': попытка {amount}₽, осталось {remaining}₽ из {category_limit.monthly_limit}₽"
+                warnings.append(msg)
+                logger.warning(f"Транзакция {transaction_id}: {msg}")
+
+        logger.info(
+            f"Транзакция {transaction_id} (дебетовая): {amount}₽ по '{category}' | мерчант: {merchant}"
+        )
+
+        return {"success": True, "billing_period": None, "warnings": warnings, "errors": []}
+
+    @classmethod
+    async def _process_payment(
+        cls,
+        session: AsyncSession,
+        transaction,
+        transaction_id: int,
+        amount: Decimal,
+    ) -> dict:
+        """Обработка платежа по кредитной карте (погашение задолженности)."""
+        from app.db import CreditPayment
+
+        warnings = []
+        errors = []
+
+        tx_date = date.today()
+        billing_month = cls.get_billing_month(tx_date)
+
+        # Найти незакрытый период (обычно последний месяц)
+        open_periods = await AsyncORM.get_open_billing_periods(session)
+        if not open_periods:
+            warnings.append("Нет открытых периодов для зачисления платежа")
+            return {"success": True, "billing_period": None, "warnings": warnings, "errors": []}
+
+        target_period = open_periods[0]  # Самый старый открытый период (FIFO - гасим долг с ближайшим дедлайном)
+
+        # Записать платёж
+        payment = CreditPayment(
+            billing_period_id=target_period.id,
+            transaction_id=transaction_id,
+            amount=amount,
+            payment_date=tx_date,
+        )
+        session.add(payment)
+        await session.flush()
+
+        # Проверить, полностью ли закрыт период
+        total_spent = target_period.total_spent or Decimal("0")
+        total_paid = await AsyncORM.get_period_total_payments(session, target_period.id)
+
+        if total_paid >= total_spent:
+            await AsyncORM.close_billing_period(session, target_period.id)
+            logger.info(f"Период {target_period.month.strftime('%Y-%m')} закрыт (погашен)")
+            warnings.append(f"Период {target_period.month.strftime('%Y-%m')} полностью погашен")
+        else:
+            remaining = total_spent - total_paid
+            warnings.append(f"Платёж зачислен. Осталось погасить: {remaining}₽")
+
+        logger.info(f"Платёж {transaction_id}: +{amount}₽ на период {target_period.id}")
+
+        return {"success": True, "billing_period": target_period, "warnings": warnings, "errors": []}
 
     # ─── Правило лимита ─────────────────────────────────────────
 
@@ -286,20 +430,26 @@ class CreditCardService:
     @classmethod
     async def get_financial_summary(cls, session: AsyncSession) -> dict:
         """
-        Полная финансовая сводка (для дайджестов и Telegram-бота).
+        Полная финансовая сводка (для дайджестов и аналитики).
 
         Returns:
             {
-                "available_limit": Decimal,
+                "available_limit": float,
                 "credit_limit": float,
+                "credit_usage_percent": float,
                 "bonus_status": dict,
                 "open_periods": list[dict],
+                "spending_stats": dict,
+                "latest_savings_balance": float,
+                "debit_monthly_limit": float,
             }
         """
         available = await cls.get_available_limit(session)
+        total_unpaid = await AsyncORM.get_total_unpaid_expenses(session)
         bonus = await cls.get_bonus_target_status(session)
         open_periods = await AsyncORM.get_open_billing_periods(session)
         spending_stats = await cls.get_spending_statistics(session)
+        savings_balance = await AsyncORM.get_latest_savings_balance(session)
 
         periods_data = [
             {
@@ -307,14 +457,21 @@ class CreditCardService:
                 "total_spent": float(p.total_spent) if p.total_spent else 0,
                 "grace_deadline": p.grace_deadline.isoformat(),
                 "days_left": (p.grace_deadline - date.today()).days,
+                "is_closed": p.is_closed,
             }
             for p in open_periods
         ]
 
+        credit_usage = float(total_unpaid) / settings.credit_limit * 100 if settings.credit_limit > 0 else 0
+
         return {
             "available_limit": float(available),
-            "credit_limit": settings.credit_limit,
+            "credit_limit": float(settings.credit_limit),
+            "credit_usage_percent": round(credit_usage, 1),
+            "total_unpaid": float(total_unpaid),
             "bonus_status": bonus,
             "open_periods": periods_data,
             "spending_stats": spending_stats,
+            "latest_savings_balance": float(savings_balance),
+            "debit_monthly_limit": float(settings.debit_monthly_limit),
         }

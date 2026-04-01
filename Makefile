@@ -26,7 +26,7 @@ ps:
 
 # Скачать модель Ollama
 ollama-pull:
-	docker compose exec ollama ollama pull $${OLLAMA_MODEL:-qwen2.5:1.5b}
+	docker compose exec ollama ollama pull $${OLLAMA_MODEL:-qwen2.5:0.5b}
 
 # Проверка здоровья
 health:

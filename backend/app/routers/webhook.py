@@ -84,7 +84,7 @@ async def receive_sms(data: SmsWebhookRequest, db: AsyncSession = Depends(AsyncO
         )
 
         # 4. Финансовая логика — привязка к BillingPeriod
-        period = await CreditCardService.process_transaction(
+        process_result = await CreditCardService.process_transaction(
             db,
             transaction_id=transaction.id,
             amount=parsed_result.amount,
@@ -93,6 +93,15 @@ async def receive_sms(data: SmsWebhookRequest, db: AsyncSession = Depends(AsyncO
             merchant=parsed_result.merchant,
             transaction_type=parsed_result.type or "unknown",
         )
+
+        period = process_result.get("billing_period")
+        if process_result.get("errors"):
+            for error in process_result["errors"]:
+                logger.error(f"Ошибка обработки: {error}")
+
+        if process_result.get("warnings"):
+            for warning in process_result["warnings"]:
+                logger.warning(f"Предупреждение: {warning}")
 
         if period:
             grace_deadline_str = period.grace_deadline.isoformat()
@@ -144,6 +153,19 @@ async def receive_sms(data: SmsWebhookRequest, db: AsyncSession = Depends(AsyncO
                         f"Неделя: {fmt_amt(stats['weekly'])} руб.",
                         f"Месяц: {fmt_amt(stats['monthly'])} руб."
                     ]
+
+                    # Append system notifications if warnings or errors exist
+                    if process_result.get("warnings") or process_result.get("errors"):
+                        msg_lines.append("")
+                        msg_lines.append("[ SYSTEM NOTIFICATIONS ]")
+
+                        if process_result.get("warnings"):
+                            for warning in process_result["warnings"]:
+                                msg_lines.append(f"- {warning}")
+
+                        if process_result.get("errors"):
+                            for error in process_result["errors"]:
+                                msg_lines.append(f"- {error}")
 
                 vk = VkBotClient(settings.vk_bot_token, settings.vk_user_id, settings.vk_api_version)
 

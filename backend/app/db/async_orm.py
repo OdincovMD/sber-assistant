@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import get_settings
-from app.db.models import Base, Transaction, TransactionType, BillingPeriod
+from app.db.models import Base, Transaction, TransactionType, BillingPeriod, BudgetLimit, CreditPayment
 
 logger = logging.getLogger(__name__)
 
@@ -331,5 +331,72 @@ class AsyncORM:
             .where(BillingPeriod.month == month)
             .where(Transaction.is_expense == True)
             .where(Transaction.is_parsed == True)
+        )
+        return result.scalar()
+
+    # ─── Лимиты и бюджеты ────────────────────────────────────────
+
+    @classmethod
+    async def get_budget_limit(
+        cls, session: AsyncSession, category: str
+    ) -> Optional[BudgetLimit]:
+        """Получить лимит по категории расходов."""
+        result = await session.execute(
+            select(BudgetLimit)
+            .where(BudgetLimit.category == category)
+            .where(BudgetLimit.is_active == True)
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_month_category_expenses(
+        cls,
+        session: AsyncSession,
+        category: str,
+        month: date,
+    ) -> Decimal:
+        """Сумма расходов по категории за месяц."""
+        result = await session.execute(
+            select(func.coalesce(func.sum(func.abs(Transaction.amount)), 0))
+            .where(Transaction.category == category)
+            .where(Transaction.is_expense == True)
+            .where(Transaction.is_parsed == True)
+            .where(func.date_trunc('month', Transaction.created_at) == month)
+        )
+        return result.scalar()
+
+    @classmethod
+    async def set_budget_limit(
+        cls,
+        session: AsyncSession,
+        category: str,
+        monthly_limit: Decimal,
+    ) -> BudgetLimit:
+        """Установить или обновить лимит по категории."""
+        result = await session.execute(
+            select(BudgetLimit).where(BudgetLimit.category == category)
+        )
+        budget = result.scalar_one_or_none()
+
+        if budget:
+            budget.monthly_limit = monthly_limit
+            budget.is_active = True
+        else:
+            budget = BudgetLimit(category=category, monthly_limit=monthly_limit, is_active=True)
+            session.add(budget)
+
+        await session.flush()
+        return budget
+
+    @classmethod
+    async def get_period_total_payments(
+        cls,
+        session: AsyncSession,
+        period_id: int,
+    ) -> Decimal:
+        """Сумма всех платежей по периоду."""
+        result = await session.execute(
+            select(func.coalesce(func.sum(CreditPayment.amount), 0))
+            .where(CreditPayment.billing_period_id == period_id)
         )
         return result.scalar()

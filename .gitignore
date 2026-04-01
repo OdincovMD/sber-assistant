@@ -17,6 +17,7 @@ build/
 *.swo
 *~
 AGENTS.md
+CLAUDE.md
 
 # OS
 .DS_Store

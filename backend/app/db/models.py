@@ -106,3 +106,33 @@ class DailyYield(Base):
             f"<DailyYield date={self.date} tail={self.account_tail} "
             f"balance={self.end_of_day_balance} rate={self.applied_rate} earned={self.earned_amount}>"
         )
+
+class BudgetLimit(Base):
+    """Лимит расходов по категориям дебетовой карты."""
+    __tablename__ = "budget_limits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String(100), nullable=False, unique=True, comment="Категория расходов")
+    monthly_limit = Column(Numeric(12, 2), nullable=False, comment="Месячный лимит")
+    is_active = Column(Boolean, default=True, comment="Активен ли лимит")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def __repr__(self) -> str:
+        return f"<BudgetLimit(category={self.category}, limit={self.monthly_limit})>"
+
+class CreditPayment(Base):
+    """История платежей по кредитной карте для отслеживания погашения."""
+    __tablename__ = "credit_payments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    billing_period_id = Column(Integer, ForeignKey("billing_periods.id"), nullable=False)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True, comment="Связанная транзакция (если распарсена из СМС)")
+    amount = Column(Numeric(12, 2), nullable=False, comment="Сумма платежа")
+    payment_date = Column(Date, nullable=False, comment="Дата платежа")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    billing_period = relationship("BillingPeriod", backref="payments")
+
+    def __repr__(self) -> str:
+        return f"<CreditPayment(period={self.billing_period_id}, amount={self.amount})>"
