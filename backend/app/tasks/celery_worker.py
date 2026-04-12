@@ -47,7 +47,16 @@ celery_app.conf.beat_schedule = {
     "ai-advice-task": {
         "task": "app.tasks.celery_worker.send_ai_advice",
         "schedule": crontab(minute=0, hour=19, day_of_week=5),  # Friday 19:00 Moscow time
-    }
+    },
+    # ─── Инвестиционные задачи ───────────────────────────────────
+    "fetch-moex-prices": {
+        "task": "app.tasks.celery_worker.fetch_investment_prices",
+        "schedule": crontab(minute=5, hour=19),   # 19:05 после закрытия MOEX (18:50)
+    },
+    "check-ldv-alerts": {
+        "task": "app.tasks.celery_worker.check_ldv_alerts",
+        "schedule": crontab(minute=0, hour=8),    # 08:00 утром
+    },
 }
 celery_app.conf.timezone = "Europe/Moscow"
 
@@ -132,7 +141,7 @@ def send_weekly_budget_report():
 
                 # Build report
                 today = date.today()
-                current_month = today.strftime("%Y-%m")
+                current_month = today.replace(day=1)
 
                 lines = [
                     "BUDGET REPORT (CURRENT MONTH)",
@@ -240,6 +249,9 @@ def process_sms_task(transaction_id: int):
                         for warning in process_result["warnings"]:
                             logger.warning(f"Предупреждение: {warning}")
 
+                    # Сохраняем все изменения в БД до отправки уведомлений
+                    await session.commit()
+
                     # 5. VK notification (strict banking-style, no emojis)
                     try:
                         if settings.vk_bot_token and settings.vk_bot_token != "YOUR_VK_BOT_TOKEN" and settings.vk_user_id:
@@ -315,8 +327,103 @@ def process_sms_task(transaction_id: int):
                         raw_llm_response=raw_response,
                         is_parsed=False,
                     )
+                    await session.commit()
                     logger.warning(f"Парсинг FAILED для транзакции {transaction_id} — не удалось извлечь данные из ответа LLM")
 
+        finally:
+            await AsyncORM.close()
+
+    asyncio.run(_inner())
+
+
+@celery_app.task(name="app.tasks.celery_worker.fetch_investment_prices")
+def fetch_investment_prices():
+    """
+    Ежедневно в 19:05 — забирает цены биржевых БПИФ с MOEX ISS и сохраняет в БД.
+    Запускается после закрытия основной торговой сессии MOEX (18:50 МСК).
+    ПИФ_НАК — обновляется вручную через POST /api/investment/price.
+    """
+    async def _inner():
+        from app.services.moex_client import MOEXClient, MOEX_TICKERS
+
+        await AsyncORM.init()
+        try:
+            prices = await MOEXClient.get_prices_bulk(MOEX_TICKERS)
+            today  = date.today()
+            updated = []
+            failed  = []
+
+            async with AsyncORM.get_session()() as session:
+                for ticker, price in prices.items():
+                    if price is not None:
+                        await AsyncORM.upsert_investment_price(
+                            session, ticker=ticker, price_date=today,
+                            price=price, source="moex",
+                        )
+                        updated.append(f"{ticker}={price}")
+                    else:
+                        failed.append(ticker)
+                await session.commit()
+
+            if updated:
+                logger.info(f"MOEX prices updated: {', '.join(updated)}")
+            if failed:
+                logger.warning(f"MOEX prices failed: {', '.join(failed)}")
+
+        except Exception as e:
+            logger.error(f"fetch_investment_prices error: {e}")
+        finally:
+            await AsyncORM.close()
+
+    asyncio.run(_inner())
+
+
+@celery_app.task(name="app.tasks.celery_worker.check_ldv_alerts")
+def check_ldv_alerts():
+    """
+    Ежедневно в 08:00 — проверяет приближающиеся даты ЛДВ и отправляет VK-алерт.
+
+    Алерт отправляется при:
+    - 90 дней до ЛДВ (первое предупреждение)
+    - 30 дней до ЛДВ (срочное)
+    - В день наступления ЛДВ (льгота доступна)
+    """
+    async def _inner():
+        from app.services.investment_service import InvestmentService, LDV_WARN_DAYS, LDV_CRITICAL_DAYS
+
+        await AsyncORM.init()
+        try:
+            async with AsyncORM.get_session()() as session:
+                calendar = await InvestmentService.get_ldv_calendar(session)
+
+            # Фильтруем только лоты, требующие уведомления сегодня
+            alerts = []
+            for entry in calendar:
+                days = entry["days_to_ldv"]
+                if days in (0, LDV_CRITICAL_DAYS, LDV_WARN_DAYS):
+                    alerts.append(entry)
+
+            if not alerts:
+                return
+
+            lines = ["[ ЛДВ УВЕДОМЛЕНИЕ ]", ""]
+            for a in alerts:
+                lines.append(a["message"])
+
+            msg = "\n".join(lines)
+            logger.info(f"ЛДВ алерт: {len(alerts)} лотов")
+
+            if settings.vk_bot_token and settings.vk_bot_token != "YOUR_VK_BOT_TOKEN" and settings.vk_user_id:
+                vk = VkBotClient(settings.vk_bot_token, settings.vk_user_id, settings.vk_api_version)
+                try:
+                    await vk.send_message(msg)
+                except Exception as e:
+                    logger.error(f"VK LDV alert error: {e}")
+                finally:
+                    await vk.close()
+
+        except Exception as e:
+            logger.error(f"check_ldv_alerts error: {e}")
         finally:
             await AsyncORM.close()
 

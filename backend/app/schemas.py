@@ -71,10 +71,23 @@ class SpendingStatsResponse(BaseModel):
     monthly: float
 
 
+class NetWorthResponse(BaseModel):
+    """Чистый капитал."""
+    savings_balance: float
+    investment_value: float
+    credit_debt: float
+    total: float
+
+
 class FinancialSummaryResponse(BaseModel):
     """Полная финансовая сводка."""
     available_limit: float
     credit_limit: float
+    credit_usage_percent: float
+    total_unpaid: float
     bonus_status: BonusStatusResponse
     open_periods: list[dict]
     spending_stats: SpendingStatsResponse
+    latest_savings_balance: float
+    debit_monthly_limit: float
+    net_worth: NetWorthResponse

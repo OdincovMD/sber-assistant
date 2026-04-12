@@ -5,6 +5,7 @@ pydantic-settings
 sqlalchemy[asyncio]
 asyncpg
 httpx
+aiohttp
 python-dotenv
 python-dateutil
 celery[redis]

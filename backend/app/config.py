@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_host: str = "ollama"
     ollama_port: int = 11434
-    ollama_model: str = "qwen2.5:1.5b"
+    ollama_model: str = "qwen2.5:0.5b"
 
     # VK Bot
     vk_bot_token: str = "YOUR_VK_BOT_TOKEN"
@@ -118,3 +118,54 @@ def get_current_rate() -> float:
     from datetime import datetime
     month_key = datetime.now().strftime("%Y-%m")
     return SAVINGS_RATES.get(month_key, SAVINGS_RATES["default"])
+
+
+# Последняя известная ключевая ставка ЦБ РФ — fallback при недоступности API.
+# Обновлять вручную при изменении ставки Советом директоров ЦБ.
+CBR_KEY_RATE_FALLBACK: float = 15.0  # % годовых, актуально на 2026-04
+
+
+# ─── Инвестиционные фонды (метаданные) ─────────────────────────────────────
+# Ключ — тикер, используемый в InvestmentLot.ticker
+INVESTMENT_FUNDS: dict[str, dict] = {
+    "SBGB": {
+        "isin":       "RU000A1000F9",
+        "name":       "БПИФ Первая — Гос. облигации (ОФЗ)",
+        "fund_type":  "etf_exchange",
+        "moex_board": "TQTF",
+        "ter_pct":    0.80,   # комиссия фонда, % годовых
+        "settlement": 1,      # T+1 (дней до получения денег при продаже)
+    },
+    "SBGD": {
+        "isin":       None,   # уточнить через MOEX ISS
+        "name":       "БПИФ Первая — Доступное золото",
+        "fund_type":  "etf_exchange",
+        "moex_board": "TQTF",
+        "ter_pct":    1.30,
+        "settlement": 1,
+    },
+    "SBFR": {
+        "isin":       None,
+        "name":       "БПИФ Первая — Облигации флоатеры",
+        "fund_type":  "etf_exchange",
+        "moex_board": "TQTF",
+        "ter_pct":    0.60,
+        "settlement": 1,
+    },
+    "SBMM": {
+        "isin":       None,
+        "name":       "БПИФ Первая — Сберегательный (денежный рынок)",
+        "fund_type":  "etf_exchange",
+        "moex_board": "TQTF",
+        "ter_pct":    0.30,
+        "settlement": 1,
+    },
+    "PIF_NAK": {
+        "isin":       None,
+        "name":       "ОПИФ Первая — Накопительный",
+        "fund_type":  "pif_open",
+        "moex_board": None,   # не биржевой
+        "ter_pct":    0.50,   # приблизительно
+        "settlement": 4,      # T+3..5 (через УК)
+    },
+}

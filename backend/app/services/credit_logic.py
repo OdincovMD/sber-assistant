@@ -442,6 +442,7 @@ class CreditCardService:
                 "spending_stats": dict,
                 "latest_savings_balance": float,
                 "debit_monthly_limit": float,
+                "net_worth": dict,   ← новое
             }
         """
         available = await cls.get_available_limit(session)
@@ -464,6 +465,9 @@ class CreditCardService:
 
         credit_usage = float(total_unpaid) / settings.credit_limit * 100 if settings.credit_limit > 0 else 0
 
+        # Net worth: накопительный + инвестиции - кредитный долг
+        net_worth = await cls._calculate_net_worth(session, savings_balance, total_unpaid)
+
         return {
             "available_limit": float(available),
             "credit_limit": float(settings.credit_limit),
@@ -474,4 +478,34 @@ class CreditCardService:
             "spending_stats": spending_stats,
             "latest_savings_balance": float(savings_balance),
             "debit_monthly_limit": float(settings.debit_monthly_limit),
+            "net_worth": net_worth,
+        }
+
+    @classmethod
+    async def _calculate_net_worth(
+        cls,
+        session: AsyncSession,
+        savings_balance: Decimal,
+        credit_debt: Decimal,
+    ) -> dict:
+        """
+        Чистый капитал = накопительный счёт + инвестиционный портфель - кредитный долг.
+        """
+        from app.services.investment_service import InvestmentService
+
+        try:
+            portfolio = await InvestmentService.get_portfolio_summary(session)
+            investment_value = portfolio.get("total_current") or portfolio.get("total_invested") or 0.0
+        except Exception:
+            investment_value = 0.0
+
+        savings = float(savings_balance)
+        debt    = float(credit_debt)
+        total   = savings + investment_value - debt
+
+        return {
+            "savings_balance":  savings,
+            "investment_value": investment_value,
+            "credit_debt":      debt,
+            "total":            round(total, 2),
         }

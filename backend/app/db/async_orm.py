@@ -21,7 +21,10 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import get_settings
-from app.db.models import Base, Transaction, TransactionType, BillingPeriod, BudgetLimit, CreditPayment
+from app.db.models import (
+    Base, Transaction, TransactionType, BillingPeriod, BudgetLimit, CreditPayment,
+    InvestmentLot, InvestmentPrice, FundType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -400,3 +403,143 @@ class AsyncORM:
             .where(CreditPayment.billing_period_id == period_id)
         )
         return result.scalar()
+
+    # ─── Investment Lots ─────────────────────────────────────────
+
+    @classmethod
+    async def create_investment_lot(
+        cls,
+        session: AsyncSession,
+        *,
+        ticker: str,
+        isin: Optional[str],
+        fund_name: str,
+        fund_type: FundType,
+        quantity: Decimal,
+        purchase_price: Decimal,
+        purchase_date: date,
+        ldv_date: date,
+    ) -> InvestmentLot:
+        """Добавить новый лот покупки инвестиционного инструмента."""
+        lot = InvestmentLot(
+            ticker=ticker,
+            isin=isin,
+            fund_name=fund_name,
+            fund_type=fund_type,
+            quantity=quantity,
+            purchase_price=purchase_price,
+            purchase_date=purchase_date,
+            ldv_date=ldv_date,
+            is_active=True,
+        )
+        session.add(lot)
+        await session.flush()
+        return lot
+
+    @classmethod
+    async def get_active_lots(cls, session: AsyncSession) -> list[InvestmentLot]:
+        """Все активные лоты (не проданные)."""
+        result = await session.execute(
+            select(InvestmentLot)
+            .where(InvestmentLot.is_active == True)
+            .order_by(InvestmentLot.ticker, InvestmentLot.purchase_date)
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    async def get_lots_by_ticker(
+        cls, session: AsyncSession, ticker: str
+    ) -> list[InvestmentLot]:
+        """Активные лоты по тикеру."""
+        result = await session.execute(
+            select(InvestmentLot)
+            .where(InvestmentLot.ticker == ticker)
+            .where(InvestmentLot.is_active == True)
+            .order_by(InvestmentLot.purchase_date)
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    async def lot_exists(
+        cls, session: AsyncSession, ticker: str, purchase_date: date, quantity: Decimal
+    ) -> bool:
+        """Проверить, существует ли лот (для идемпотентного seed)."""
+        result = await session.execute(
+            select(InvestmentLot)
+            .where(InvestmentLot.ticker == ticker)
+            .where(InvestmentLot.purchase_date == purchase_date)
+            .where(InvestmentLot.quantity == quantity)
+        )
+        return result.scalar_one_or_none() is not None
+
+    # ─── Investment Prices ───────────────────────────────────────
+
+    @classmethod
+    async def upsert_investment_price(
+        cls,
+        session: AsyncSession,
+        ticker: str,
+        price_date: date,
+        price: Decimal,
+        source: str = "moex",
+    ) -> InvestmentPrice:
+        """Сохранить или обновить цену инструмента на дату."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = (
+            pg_insert(InvestmentPrice)
+            .values(
+                ticker=ticker,
+                price_date=price_date,
+                price=price,
+                source=source,
+            )
+            .on_conflict_do_update(
+                constraint="uq_investment_price_ticker_date",
+                set_={"price": price, "source": source},
+            )
+            .returning(InvestmentPrice)
+        )
+        result = await session.execute(stmt)
+        await session.flush()
+        return result.scalar_one()
+
+    @classmethod
+    async def get_latest_price(
+        cls, session: AsyncSession, ticker: str
+    ) -> Optional[InvestmentPrice]:
+        """Последняя известная цена инструмента."""
+        result = await session.execute(
+            select(InvestmentPrice)
+            .where(InvestmentPrice.ticker == ticker)
+            .order_by(InvestmentPrice.price_date.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_latest_prices_all(
+        cls, session: AsyncSession
+    ) -> dict[str, InvestmentPrice]:
+        """Словарь последних цен для всех тикеров {ticker: InvestmentPrice}."""
+        from sqlalchemy import distinct
+
+        # Для каждого тикера — максимальная дата
+        subq = (
+            select(
+                InvestmentPrice.ticker,
+                func.max(InvestmentPrice.price_date).label("max_date"),
+            )
+            .group_by(InvestmentPrice.ticker)
+            .subquery()
+        )
+        result = await session.execute(
+            select(InvestmentPrice)
+            .join(
+                subq,
+                (InvestmentPrice.ticker == subq.c.ticker)
+                & (InvestmentPrice.price_date == subq.c.max_date),
+            )
+        )
+        rows = result.scalars().all()
+        return {r.ticker: r for r in rows}

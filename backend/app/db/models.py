@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import (
     Column, Integer, String, Numeric, DateTime, Date, Float,
-    Boolean, Enum, Text, ForeignKey, func,
+    Boolean, Enum, Text, ForeignKey, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -136,3 +136,70 @@ class CreditPayment(Base):
 
     def __repr__(self) -> str:
         return f"<CreditPayment(period={self.billing_period_id}, amount={self.amount})>"
+
+
+# ─── Инвестиционный модуль ──────────────────────────────────────────────────
+
+
+class FundType(str, enum.Enum):
+    """Тип инвестиционного инструмента."""
+    ETF_EXCHANGE = "etf_exchange"  # Биржевой БПИФ — расчёты T+1 (SBGB, SBGD, SBFR, SBMM)
+    PIF_OPEN     = "pif_open"      # Открытый ПИФ — погашение через УК, T+3..5
+
+
+class InvestmentLot(Base):
+    """
+    Лот покупки инвестиционного инструмента.
+
+    Каждая покупка — отдельный лот (для точного расчёта ЛДВ и P&L).
+    ЛДВ (льгота долгосрочного владения) — 3 года с даты покупки.
+    """
+    __tablename__ = "investment_lots"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    ticker        = Column(String(20),  nullable=False, comment="Тикер инструмента: SBMM, SBGB, PIF_NAK, ...")
+    isin          = Column(String(12),  nullable=True,  comment="ISIN ценной бумаги")
+    fund_name     = Column(String(150), nullable=True,  comment="Полное название фонда")
+    fund_type     = Column(Enum(FundType, name="fund_type_enum"), nullable=False, comment="Тип фонда (биржевой/открытый ПИФ)")
+
+    quantity      = Column(Numeric(18, 5), nullable=False, comment="Количество паёв/единиц (дробные — для ОПИФ)")
+    purchase_price = Column(Numeric(14, 4), nullable=False, comment="Цена покупки за 1 пай")
+    purchase_date  = Column(Date, nullable=False, comment="Дата покупки")
+    ldv_date       = Column(Date, nullable=False, comment="Дата начала ЛДВ (purchase_date + 3 года)")
+
+    is_active     = Column(Boolean, default=True, server_default="true", comment="False если лот полностью продан")
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def invested_amount(self) -> Decimal:
+        """Сумма вложений по лоту."""
+        return Decimal(str(self.quantity)) * Decimal(str(self.purchase_price))
+
+    def __repr__(self) -> str:
+        return (
+            f"<InvestmentLot(ticker={self.ticker}, qty={self.quantity}, "
+            f"price={self.purchase_price}, date={self.purchase_date})>"
+        )
+
+
+class InvestmentPrice(Base):
+    """
+    Дневной снимок цены инвестиционного инструмента.
+
+    Источники: MOEX ISS API (биржевые БПИФ) или ручной ввод (открытые ПИФ).
+    Хранится одна запись на тикер в день (upsert по unique constraint).
+    """
+    __tablename__ = "investment_prices"
+    __table_args__ = (
+        UniqueConstraint("ticker", "price_date", name="uq_investment_price_ticker_date"),
+    )
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    ticker     = Column(String(20), nullable=False, comment="Тикер инструмента")
+    price_date = Column(Date, nullable=False, comment="Дата цены")
+    price      = Column(Numeric(14, 4), nullable=False, comment="Цена за 1 пай")
+    source     = Column(String(20), default="moex", comment="Источник: moex | manual")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<InvestmentPrice(ticker={self.ticker}, date={self.price_date}, price={self.price})>"
