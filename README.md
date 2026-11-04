@@ -89,8 +89,7 @@ make test-webhook
 | **GET** | `/api/investment/liquidation` | Ликвидность портфеля для погашения ближайшего грейс-периода |
 | **GET** | `/api/investment/compare` | Сравнение SBMM vs накопительный счёт |
 | **GET** | `/api/investment/cbr` | Ключевая ставка ЦБ, RUONIA и расписание заседаний |
-| **POST** | `/api/investment/lots` | Добавить новый лот покупки вручную |
-| **POST** | `/api/investment/price` | Обновить цену вручную (для ПИФ Накопительного) |
+
 
 ### Детали эндпоинтов
 
