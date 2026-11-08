@@ -1,4 +1,4 @@
-.PHONY: up down rebuild logs logs-backend ps ollama-pull health psql test-webhook
+.PHONY: up down rebuild logs logs-backend ps ollama-pull health psql test-webhook test
 
 # Запуск всех контейнеров
 up:
@@ -43,3 +43,7 @@ test-webhook:
 	curl -X POST http://localhost:$${NGINX_PORT:-80}/api/sber-webhook \
 		-H "Content-Type: application/json" \
 		-d '{"sms_text": "Покупка 1500р ПЯТЕРОЧКА"}'
+
+# Быстрые модульные тесты без запущенной инфраструктуры
+test:
+	PYTHONPATH=backend python -m unittest discover -s backend/tests -v

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import AsyncORM, BillingPeriod
+from app.services.transaction_type import is_credit_repayment
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -140,14 +141,28 @@ class CreditCardService:
             errors.append(f"Отрицательная сумма: {amount}₽")
             return {"success": False, "billing_period": None, "warnings": warnings, "errors": errors}
 
-        if not is_expense or amount is None:
-            logger.info(f"Транзакция {transaction_id}: не расход или нет суммы — пропуск")
-            return {"success": True, "billing_period": None, "warnings": ["Не расход или пустая сумма"], "errors": []}
-
         transaction = await AsyncORM.get_transaction_by_id(session, transaction_id)
         if not transaction:
             errors.append(f"Транзакция {transaction_id} не найдена")
             return {"success": False, "billing_period": None, "warnings": warnings, "errors": errors}
+
+        # Погашение кредитки является входящей операцией (is_expense=False),
+        # поэтому его необходимо обработать до общего фильтра доходов.
+        account_type = (
+            transaction.account_type.value
+            if hasattr(transaction.account_type, "value")
+            else transaction.account_type
+        )
+        if amount is not None and is_credit_repayment(
+            account_type=account_type,
+            transaction_type=transaction_type,
+            is_expense=is_expense,
+        ):
+            return await cls._process_payment(session, transaction, transaction_id, amount)
+
+        if not is_expense or amount is None:
+            logger.info(f"Транзакция {transaction_id}: не расход или нет суммы — пропуск")
+            return {"success": True, "billing_period": None, "warnings": ["Не расход или пустая сумма"], "errors": []}
 
         # Обработка разных типов счётов
         if transaction.account_type == "credit":

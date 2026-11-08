@@ -12,7 +12,7 @@ from typing import Optional
 
 import httpx
 
-from app.config import get_settings
+from app.config import ACCOUNTS, get_settings
 from app.schemas import OllamaParseResult
 
 logger = logging.getLogger(__name__)
@@ -21,26 +21,39 @@ settings = get_settings()
 
 # ─── Системный промпт ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """\
+ACCOUNT_RULES = ", ".join(
+    f"{tail}→{metadata['type']}" for tail, metadata in ACCOUNTS.items()
+)
+
+SYSTEM_PROMPT = f"""\
 Парсер СМС Сбербанка. Верни ТОЛЬКО JSON без пояснений.
 
 ПОЛЯ:
-{"card_tail":"<4 цифры>","account_type":"<credit|debit|savings>","amount":<число|null>,"merchant":"<название|null>","category":"<категория>","is_expense":<true|false>,"balance_after":<число|null>}
+{{"card_tail":"<4 цифры>","account_type":"<credit|debit|savings>","amount":<число|null>,"merchant":"<название|null>","category":"<категория>","type":"<purchase|payment|transfer|deposit|withdrawal|fee|unknown>","is_expense":<true|false>,"balance_after":<число|null>}}
 
-СЧЕТА: МИР7600→credit, ECMC6517→debit, *1837→savings. СЧЁТ9103 — промежуточный, используй основной счёт.
+СЧЕТА: {ACCOUNT_RULES}. Если в сообщении есть промежуточный и основной счёт, используй основной счёт.
 
 КАТЕГОРИИ: Продукты, Здоровье, Транспорт, Рестораны, Образование, Онлайн-сервисы, Платёжные системы, Перевод между счетами, Зачисление, Снятие наличных, Комиссия, Другое.
 
 is_expense=true: покупка/списание/перевод со счёта/снятие/комиссия.
 is_expense=false: зачисление/возврат/перевод на счёт.
 
+ТИП ОПЕРАЦИИ:
+- purchase: покупка или обычное списание за товар/услугу;
+- payment: любое зачисление на кредитную карту, включая погашение и возврат покупки;
+- transfer: исходящий перевод;
+- deposit: зачисление на дебетовый или накопительный счёт;
+- withdrawal: снятие наличных;
+- fee: комиссия банка;
+- unknown: только если тип невозможно определить.
+
 ВАЖНО: "Никому не сообщайте код XXXX Списание NNNNр с ECMCXXXX МЕРЧАНТ" — реальное списание, is_expense=true.
 balance_after: число из "Баланс: Xр", иначе null.
 
-ПРИМЕРЫ:
-СМС: "Счёт карты ECMC6517 Покупка 800р STOMATOLOG Баланс: 63377.02р" → {"card_tail":"6517","account_type":"debit","amount":800.0,"merchant":"STOMATOLOG","category":"Здоровье","is_expense":true,"balance_after":63377.02}
-СМС: "МИР7600 Покупка 3200р PYATEROCHKA Баланс: 146800.00р" → {"card_tail":"7600","account_type":"credit","amount":3200.0,"merchant":"PYATEROCHKA","category":"Продукты","is_expense":true,"balance_after":146800.0}
-СМС: "СЧЁТ9103 Зачисление 50067.12р на Накопительный счет *1837" → {"card_tail":"1837","account_type":"savings","amount":50067.12,"merchant":"СЧЁТ9103","category":"Зачисление","is_expense":false,"balance_after":null}
+ПРИМЕРЫ КЛАССИФИКАЦИИ:
+- покупка по кредитной или дебетовой карте → type=purchase, is_expense=true;
+- зачисление на кредитную карту → type=payment, is_expense=false;
+- зачисление на дебетовый или накопительный счёт → type=deposit, is_expense=false.
 """
 
 

@@ -8,9 +8,10 @@ from sqlalchemy import select
 
 from app.db.models import Transaction, DailyYield, BudgetLimit, TransactionType
 from app.db.async_orm import AsyncORM
-from app.config import get_current_rate, get_settings
+from app.config import SAVINGS_ACC, get_current_rate, get_settings
 from app.services.ollama_client import ollama_client
 from app.services.credit_logic import CreditCardService
+from app.services.transaction_type import normalize_transaction_type
 from app.services.vk_client import VkBotClient
 from app.services.analyst_service import FinancialAnalyst
 from datetime import datetime
@@ -91,7 +92,7 @@ def calculate_and_store_yield():
                     session.add(
                         DailyYield(
                             date=today,
-                            account_tail="1837",
+                            account_tail=SAVINGS_ACC,
                             end_of_day_balance=balance,
                             applied_rate=rate,
                             earned_amount=earned,
@@ -104,7 +105,7 @@ def calculate_and_store_yield():
                     import logging
                     msg = (
                         f"ФИНАНСОВЫЙ ДАЙДЖЕСТ: НАКОПИТЕЛЬНЫЙ СЧЕТ\n"
-                        f"Счет: *1837\n"
+                        f"Счет: *{SAVINGS_ACC}\n"
                         f"Примененная ставка: {rate}% годовых\n\n"
                         f"Доход за сегодня: +{earned} руб.\n"
                         f"Текущий баланс: {balance} руб."
@@ -197,6 +198,13 @@ def process_sms_task(transaction_id: int):
 
                 # 3. Update DB with parse results
                 if parsed_result:
+                    normalized_type = normalize_transaction_type(
+                        explicit_type=parsed_result.type,
+                        account_type=parsed_result.account_type,
+                        category=parsed_result.category,
+                        is_expense=parsed_result.is_expense,
+                    )
+
                     # Determine grace safety
                     is_grace_safe = True
                     if parsed_result.account_type == "credit":
@@ -209,7 +217,7 @@ def process_sms_task(transaction_id: int):
                         card_tail=parsed_result.card_tail,
                         account_type=parsed_result.account_type,
                         amount=parsed_result.amount,
-                        transaction_type=TYPE_MAPPING.get(parsed_result.type, TransactionType.UNKNOWN),
+                        transaction_type=TYPE_MAPPING.get(normalized_type, TransactionType.UNKNOWN),
                         merchant=parsed_result.merchant,
                         category=parsed_result.category,
                         is_grace_safe=is_grace_safe,
@@ -238,7 +246,7 @@ def process_sms_task(transaction_id: int):
                         is_expense=parsed_result.is_expense,
                         is_grace_safe=is_grace_safe,
                         merchant=parsed_result.merchant,
-                        transaction_type=parsed_result.type or "unknown",
+                        transaction_type=normalized_type,
                     )
 
                     if process_result.get("errors"):
