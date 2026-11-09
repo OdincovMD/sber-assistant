@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import AsyncORM, BillingPeriod
+from app.services.payment_allocation import allocate_payment_fifo
 from app.services.transaction_type import is_credit_repayment
 
 logger = logging.getLogger(__name__)
@@ -294,41 +295,94 @@ class CreditCardService:
         errors = []
 
         tx_date = date.today()
-        billing_month = cls.get_billing_month(tx_date)
 
-        # Найти незакрытый период (обычно последний месяц)
+        # Периоды уже отсортированы по ближайшему дедлайну.
         open_periods = await AsyncORM.get_open_billing_periods(session)
         if not open_periods:
             warnings.append("Нет открытых периодов для зачисления платежа")
             return {"success": True, "billing_period": None, "warnings": warnings, "errors": []}
 
-        target_period = open_periods[0]  # Самый старый открытый период (FIFO - гасим долг с ближайшим дедлайном)
+        period_by_id = {period.id: period for period in open_periods}
+        period_debts = []
+        for period in open_periods:
+            outstanding = await AsyncORM.get_period_outstanding(session, period.id)
+            if outstanding == 0:
+                await AsyncORM.close_billing_period(session, period.id)
+                continue
+            period_debts.append((period.id, outstanding))
 
-        # Записать платёж
-        payment = CreditPayment(
-            billing_period_id=target_period.id,
-            transaction_id=transaction_id,
-            amount=amount,
-            payment_date=tx_date,
-        )
-        session.add(payment)
+        allocations, unallocated = allocate_payment_fifo(amount, period_debts)
+        if not allocations:
+            warnings.append("Нет непогашенной задолженности для распределения платежа")
+            return {
+                "success": True,
+                "billing_period": None,
+                "warnings": warnings,
+                "errors": [],
+                "payment_allocations": [],
+                "unallocated_amount": amount,
+            }
+
+        allocation_data = []
+        allocated_total = Decimal("0")
+        outstanding_by_id = dict(period_debts)
+
+        for allocation in allocations:
+            period = period_by_id[allocation.period_id]
+            session.add(
+                CreditPayment(
+                    billing_period_id=period.id,
+                    transaction_id=transaction_id,
+                    amount=allocation.amount,
+                    payment_date=tx_date,
+                )
+            )
+            allocated_total += allocation.amount
+            outstanding_after = outstanding_by_id[period.id] - allocation.amount
+
+            allocation_data.append(
+                {
+                    "period_id": period.id,
+                    "month": period.month.strftime("%Y-%m"),
+                    "amount": allocation.amount,
+                    "outstanding_after": outstanding_after,
+                }
+            )
+
+            if outstanding_after == 0:
+                await AsyncORM.close_billing_period(session, period.id)
+                warnings.append(
+                    f"Период {period.month.strftime('%Y-%m')} полностью погашен"
+                )
+
         await session.flush()
 
-        # Проверить, полностью ли закрыт период
-        total_spent = target_period.total_spent or Decimal("0")
-        total_paid = await AsyncORM.get_period_total_payments(session, target_period.id)
+        total_outstanding_after = sum(
+            (outstanding for _, outstanding in period_debts), Decimal("0")
+        ) - allocated_total
+        warnings.append(
+            f"Платёж распределён: {allocated_total}₽. "
+            f"Общий остаток долга: {total_outstanding_after}₽"
+        )
+        if unallocated > 0:
+            warnings.append(
+                f"Сверх учтённой задолженности осталось {unallocated}₽"
+            )
 
-        if total_paid >= total_spent:
-            await AsyncORM.close_billing_period(session, target_period.id)
-            logger.info(f"Период {target_period.month.strftime('%Y-%m')} закрыт (погашен)")
-            warnings.append(f"Период {target_period.month.strftime('%Y-%m')} полностью погашен")
-        else:
-            remaining = total_spent - total_paid
-            warnings.append(f"Платёж зачислен. Осталось погасить: {remaining}₽")
+        target_period = period_by_id[allocations[0].period_id]
+        logger.info(
+            f"Платёж {transaction_id}: распределено {allocated_total}₽ "
+            f"по {len(allocations)} периодам, остаток платежа {unallocated}₽"
+        )
 
-        logger.info(f"Платёж {transaction_id}: +{amount}₽ на период {target_period.id}")
-
-        return {"success": True, "billing_period": target_period, "warnings": warnings, "errors": []}
+        return {
+            "success": True,
+            "billing_period": target_period,
+            "warnings": warnings,
+            "errors": [],
+            "payment_allocations": allocation_data,
+            "unallocated_amount": unallocated,
+        }
 
     # ─── Правило лимита ─────────────────────────────────────────
 
@@ -467,16 +521,21 @@ class CreditCardService:
         spending_stats = await cls.get_spending_statistics(session)
         savings_balance = await AsyncORM.get_latest_savings_balance(session)
 
-        periods_data = [
-            {
-                "month": p.month.strftime("%Y-%m"),
-                "total_spent": float(p.total_spent) if p.total_spent else 0,
-                "grace_deadline": p.grace_deadline.isoformat(),
-                "days_left": (p.grace_deadline - date.today()).days,
-                "is_closed": p.is_closed,
-            }
-            for p in open_periods
-        ]
+        periods_data = []
+        for period in open_periods:
+            total_paid = await AsyncORM.get_period_total_payments(session, period.id)
+            outstanding = await AsyncORM.get_period_outstanding(session, period.id)
+            periods_data.append(
+                {
+                    "month": period.month.strftime("%Y-%m"),
+                    "total_spent": float(period.total_spent or 0),
+                    "total_paid": float(total_paid),
+                    "outstanding": float(outstanding),
+                    "grace_deadline": period.grace_deadline.isoformat(),
+                    "days_left": (period.grace_deadline - date.today()).days,
+                    "is_closed": period.is_closed,
+                }
+            )
 
         credit_usage = float(total_unpaid) / settings.credit_limit * 100 if settings.credit_limit > 0 else 0
 

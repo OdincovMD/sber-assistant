@@ -55,17 +55,24 @@ async def get_periods(db: AsyncSession = Depends(AsyncORM.get_db)):
     periods = await AsyncORM.get_open_billing_periods(db)
     from datetime import date as date_type
 
-    return [
-        {
-            "id": p.id,
-            "month": p.month.strftime("%Y-%m"),
-            "total_spent": float(p.total_spent) if p.total_spent else 0,
-            "grace_deadline": p.grace_deadline.isoformat(),
-            "days_left": (p.grace_deadline - date_type.today()).days,
-            "is_closed": p.is_closed,
-        }
-        for p in periods
-    ]
+    result = []
+    for period in periods:
+        total_spent = period.total_spent or 0
+        total_paid = await AsyncORM.get_period_total_payments(db, period.id)
+        outstanding = await AsyncORM.get_period_outstanding(db, period.id)
+        result.append(
+            {
+                "id": period.id,
+                "month": period.month.strftime("%Y-%m"),
+                "total_spent": float(total_spent),
+                "total_paid": float(total_paid),
+                "outstanding": float(outstanding),
+                "grace_deadline": period.grace_deadline.isoformat(),
+                "days_left": (period.grace_deadline - date_type.today()).days,
+                "is_closed": period.is_closed,
+            }
+        )
+    return result
 
 
 @router.get("/budgets")

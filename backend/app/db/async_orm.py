@@ -311,15 +311,12 @@ class AsyncORM:
     async def get_total_unpaid_expenses(
         cls, session: AsyncSession
     ) -> Decimal:
-        """Сумма всех расходов по незакрытым периодам."""
-        result = await session.execute(
-            select(func.coalesce(func.sum(func.abs(Transaction.amount)), 0))
-            .join(BillingPeriod, Transaction.billing_period_id == BillingPeriod.id)
-            .where(Transaction.is_expense == True)
-            .where(Transaction.is_parsed == True)
-            .where(BillingPeriod.is_closed == False)
-        )
-        return result.scalar()
+        """Остаток долга по всем периодам с учётом частичных платежей."""
+        periods = await cls.get_open_billing_periods(session)
+        total = Decimal("0")
+        for period in periods:
+            total += await cls.get_period_outstanding(session, period.id)
+        return total
 
     @classmethod
     async def get_month_expenses_total(
@@ -403,6 +400,20 @@ class AsyncORM:
             .where(CreditPayment.billing_period_id == period_id)
         )
         return result.scalar()
+
+    @classmethod
+    async def get_period_outstanding(
+        cls,
+        session: AsyncSession,
+        period_id: int,
+    ) -> Decimal:
+        """Остаток долга периода: траты минус распределённые платежи."""
+        result = await session.execute(
+            select(BillingPeriod.total_spent).where(BillingPeriod.id == period_id)
+        )
+        total_spent = result.scalar_one_or_none() or Decimal("0")
+        total_paid = await cls.get_period_total_payments(session, period_id)
+        return max(Decimal("0"), total_spent - total_paid)
 
     # ─── Investment Lots ─────────────────────────────────────────
 
