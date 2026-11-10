@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import get_settings
 from app.db.models import (
-    Base, Transaction, TransactionType, BillingPeriod, BudgetLimit, CreditPayment,
-    InvestmentLot, InvestmentPrice, FundType,
+    Base, Transaction, WebhookEvent, TransactionType, BillingPeriod, BudgetLimit,
+    CreditPayment, InvestmentLot, InvestmentPrice, FundType,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,6 +168,42 @@ class AsyncORM:
             select(Transaction).where(Transaction.id == transaction_id)
         )
         return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_transaction_by_id_for_update(
+        cls, session: AsyncSession, transaction_id: int
+    ) -> Optional[Transaction]:
+        """Найти и заблокировать транзакцию до завершения обработки."""
+        result = await session.execute(
+            select(Transaction)
+            .where(Transaction.id == transaction_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_or_create_webhook_event(
+        cls,
+        session: AsyncSession,
+        event_key: str,
+    ) -> tuple[WebhookEvent, bool]:
+        """Атомарно занять idempotency key или вернуть существующее событие."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = (
+            pg_insert(WebhookEvent)
+            .values(key=event_key)
+            .on_conflict_do_nothing(index_elements=[WebhookEvent.key])
+            .returning(WebhookEvent.key)
+        )
+        result = await session.execute(stmt)
+        created = result.scalar_one_or_none() is not None
+
+        event_result = await session.execute(
+            select(WebhookEvent).where(WebhookEvent.key == event_key)
+        )
+        event = event_result.scalar_one()
+        return event, created
 
     @classmethod
     async def get_transactions_by_date_range(

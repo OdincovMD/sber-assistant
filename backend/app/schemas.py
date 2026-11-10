@@ -18,13 +18,19 @@ class AccountType(str, Enum):
 class SmsWebhookRequest(BaseModel):
     """Входящий вебхук от iOS Shortcuts с текстом СМС."""
     sms_text: str = Field(..., min_length=1, max_length=2000, description="Текст СМС от Сбера")
+    idempotency_key: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=256,
+        description="Опциональный уникальный ID события от клиента",
+    )
 
 
 # ─── Ollama ────────────────────────────────────────────────────
 
 class OllamaParseResult(BaseModel):
     """Результат парсинга СМС через Ollama LLM (v2 — мульти-аккаунт)."""
-    card_tail: Optional[str] = Field(None, description="Последние 4 цифры карты/счёта (7600, 6517, 7757, 1837)")
+    card_tail: Optional[str] = Field(None, description="Последние 4 цифры карты/счёта")
     account_type: Optional[str] = Field(None, description="Тип счёта: credit / debit / savings")
     amount: Optional[Decimal] = Field(None, description="Сумма транзакции")
     merchant: Optional[str] = Field(None, description="Получатель / мерчант / источник")
@@ -35,7 +41,7 @@ class OllamaParseResult(BaseModel):
     # Обратная совместимость (legacy-поля, заполняются из card_tail + account_type)
     type: Optional[str] = Field(None, description="Тип: purchase / payment / transfer / deposit / withdrawal / fee / unknown")
     is_grace_safe: Optional[bool] = Field(None, description="Безопасна ли для грейс-периода")
-    card: Optional[str] = Field(None, description="Маска карты/счёта (ECMC6517, СЧЁТ9103, *1837)")
+    card: Optional[str] = Field(None, description="Маска карты/счёта из сообщения")
 
 
 # ─── Response ──────────────────────────────────────────────────

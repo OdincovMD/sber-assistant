@@ -185,13 +185,23 @@ def process_sms_task(transaction_id: int):
         await AsyncORM.init()
         try:
             async with AsyncORM.get_session()() as session:
-                # 1. Fetch the raw transaction by ID
-                transaction = await AsyncORM.get_transaction_by_id(session, transaction_id)
+                # 1. Lock the transaction so duplicate Celery deliveries cannot
+                # apply the same financial operation concurrently.
+                transaction = await AsyncORM.get_transaction_by_id_for_update(
+                    session,
+                    transaction_id,
+                )
                 if not transaction:
                     logger.warning(f"Transaction {transaction_id} not found")
                     return
 
-                logger.info(f"Processing SMS for transaction {transaction_id}: {transaction.sms_text}")
+                if transaction.is_parsed:
+                    logger.info(
+                        f"Transaction {transaction_id} already processed — skipping duplicate task"
+                    )
+                    return
+
+                logger.info(f"Processing SMS for transaction {transaction_id}")
 
                 # 2. Parse via Ollama
                 parsed_result, raw_response = await ollama_client.parse_sms(transaction.sms_text)

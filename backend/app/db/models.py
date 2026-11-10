@@ -8,6 +8,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
+from app.config import SAVINGS_ACC
+
+
 class Base(DeclarativeBase):
     """Базовый класс для всех моделей."""
     pass
@@ -77,12 +80,27 @@ class Transaction(Base):
     def __repr__(self) -> str:
         return f"<Transaction(id={self.id}, tail={self.card_tail}, amount={self.amount})>"
 
+
+class WebhookEvent(Base):
+    """Idempotency record linking one inbound webhook to one transaction."""
+    __tablename__ = "webhook_events"
+
+    key = Column(String(64), primary_key=True)
+    transaction_id = Column(
+        Integer,
+        ForeignKey("transactions.id"),
+        nullable=True,
+        unique=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class DailyYield(Base):
-    """Ежедневная расчётная прибыль по накопительному счёту *1837."""
+    """Ежедневная расчётная прибыль по накопительному счёту."""
     __tablename__ = "daily_yields"
 
     date = Column(Date, primary_key=True, comment="Дата расчёта")
-    account_tail = Column(String(4), default="1837", nullable=False)
+    account_tail = Column(String(4), default=SAVINGS_ACC, nullable=False)
     end_of_day_balance = Column(Numeric(12, 2), nullable=False, comment="Баланс на конец дня")
     applied_rate = Column(Float, nullable=False, comment="Примененная ставка")
     earned_amount = Column(Numeric(12, 2), nullable=False, comment="Заработанная сумма")
