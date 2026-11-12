@@ -159,7 +159,13 @@ class CreditCardService:
             transaction_type=transaction_type,
             is_expense=is_expense,
         ):
-            return await cls._process_payment(session, transaction, transaction_id, amount)
+            return await cls._process_payment(
+                session,
+                transaction,
+                transaction_id,
+                amount,
+                transaction_date,
+            )
 
         if not is_expense or amount is None:
             logger.info(f"Транзакция {transaction_id}: не расход или нет суммы — пропуск")
@@ -199,7 +205,13 @@ class CreditCardService:
 
         # Проверка платежа (снижение задолженности)
         if transaction_type == "payment":
-            return await cls._process_payment(session, transaction, transaction_id, amount)
+            return await cls._process_payment(
+                session,
+                transaction,
+                transaction_id,
+                amount,
+                transaction_date,
+            )
 
         # Проверка лимита
         available = await cls.get_available_limit(session)
@@ -287,6 +299,7 @@ class CreditCardService:
         transaction,
         transaction_id: int,
         amount: Decimal,
+        transaction_date: Optional[date] = None,
     ) -> dict:
         """Обработка платежа по кредитной карте (погашение задолженности)."""
         from app.db import CreditPayment
@@ -294,7 +307,7 @@ class CreditCardService:
         warnings = []
         errors = []
 
-        tx_date = date.today()
+        tx_date = transaction_date or date.today()
 
         # Периоды уже отсортированы по ближайшему дедлайну.
         open_periods = await AsyncORM.get_open_billing_periods(session)

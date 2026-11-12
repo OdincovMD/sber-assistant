@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from datetime import date
+from datetime import date, datetime
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import select
@@ -11,10 +11,10 @@ from app.db.async_orm import AsyncORM
 from app.config import SAVINGS_ACC, get_current_rate, get_settings
 from app.services.ollama_client import ollama_client
 from app.services.credit_logic import CreditCardService
+from app.services.transaction_datetime import parse_transaction_datetime
 from app.services.transaction_type import normalize_transaction_type
 from app.services.vk_client import VkBotClient
 from app.services.analyst_service import FinancialAnalyst
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,12 @@ def process_sms_task(transaction_id: int):
 
                 # 3. Update DB with parse results
                 if parsed_result:
+                    operation_datetime = parse_transaction_datetime(
+                        transaction.sms_text,
+                        transaction.created_at,
+                    )
+                    transaction.created_at = operation_datetime
+
                     normalized_type = normalize_transaction_type(
                         explicit_type=parsed_result.type,
                         account_type=parsed_result.account_type,
@@ -257,6 +263,7 @@ def process_sms_task(transaction_id: int):
                         is_grace_safe=is_grace_safe,
                         merchant=parsed_result.merchant,
                         transaction_type=normalized_type,
+                        transaction_date=operation_datetime.date(),
                     )
 
                     if process_result.get("errors"):
