@@ -238,10 +238,23 @@ class CreditCardService:
         # 3. Обновляем total_spent периода
         current_total = await AsyncORM.get_month_expenses_total(session, billing_month)
         await AsyncORM.update_billing_period_spent(session, period.id, current_total)
+        was_closed = bool(period.is_closed)
+        period_state = await AsyncORM.reconcile_billing_period_status(
+            session,
+            period.id,
+        )
+
+        if was_closed and period_state and not period_state.is_closed:
+            warnings.append(
+                f"Период {billing_month.strftime('%Y-%m')} переоткрыт: "
+                f"остаток долга {period_state.outstanding}₽"
+            )
 
         logger.info(
             f"Транзакция {transaction_id} → период {billing_month.strftime('%Y-%m')} | "
-            f"total_spent={current_total}₽ | deadline={grace_deadline}"
+            f"total_spent={current_total}₽ | "
+            f"outstanding={period_state.outstanding if period_state else 'unknown'}₽ | "
+            f"deadline={grace_deadline}"
         )
 
         # 4. Grace-unsafe? → ALARM!
@@ -320,7 +333,7 @@ class CreditCardService:
         for period in open_periods:
             outstanding = await AsyncORM.get_period_outstanding(session, period.id)
             if outstanding == 0:
-                await AsyncORM.close_billing_period(session, period.id)
+                await AsyncORM.reconcile_billing_period_status(session, period.id)
                 continue
             period_debts.append((period.id, outstanding))
 
@@ -362,13 +375,18 @@ class CreditCardService:
                 }
             )
 
-            if outstanding_after == 0:
-                await AsyncORM.close_billing_period(session, period.id)
+        await session.flush()
+
+        for allocation in allocations:
+            state = await AsyncORM.reconcile_billing_period_status(
+                session,
+                allocation.period_id,
+            )
+            if state and state.is_closed:
+                period = period_by_id[allocation.period_id]
                 warnings.append(
                     f"Период {period.month.strftime('%Y-%m')} полностью погашен"
                 )
-
-        await session.flush()
 
         total_outstanding_after = sum(
             (outstanding for _, outstanding in period_debts), Decimal("0")

@@ -25,6 +25,10 @@ from app.db.models import (
     Base, Transaction, WebhookEvent, TransactionType, BillingPeriod, BudgetLimit,
     CreditPayment, InvestmentLot, InvestmentPrice, FundType,
 )
+from app.services.billing_period_state import (
+    BillingPeriodState,
+    calculate_billing_period_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -302,13 +306,48 @@ class AsyncORM:
     async def get_open_billing_periods(
         cls, session: AsyncSession
     ) -> list[BillingPeriod]:
-        """Получить все незакрытые отчётные периоды."""
+        """Получить периоды с долгом, попутно исправив устаревшие флаги."""
         result = await session.execute(
             select(BillingPeriod)
-            .where(BillingPeriod.is_closed == False)
             .order_by(BillingPeriod.grace_deadline.asc())
         )
-        return list(result.scalars().all())
+        periods = list(result.scalars().all())
+        open_periods = []
+        state_changed = False
+
+        for period in periods:
+            total_paid = await cls.get_period_total_payments(session, period.id)
+            state = calculate_billing_period_state(period.total_spent, total_paid)
+            if period.is_closed != state.is_closed:
+                period.is_closed = state.is_closed
+                state_changed = True
+            if not state.is_closed:
+                open_periods.append(period)
+
+        if state_changed:
+            await session.flush()
+
+        return open_periods
+
+    @classmethod
+    async def reconcile_billing_period_status(
+        cls,
+        session: AsyncSession,
+        period_id: int,
+    ) -> Optional[BillingPeriodState]:
+        """Synchronize ``is_closed`` with the period's actual outstanding debt."""
+        result = await session.execute(
+            select(BillingPeriod).where(BillingPeriod.id == period_id)
+        )
+        period = result.scalar_one_or_none()
+        if period is None:
+            return None
+
+        total_paid = await cls.get_period_total_payments(session, period_id)
+        state = calculate_billing_period_state(period.total_spent, total_paid)
+        period.is_closed = state.is_closed
+        await session.flush()
+        return state
 
     @classmethod
     async def update_billing_period_spent(
@@ -449,7 +488,7 @@ class AsyncORM:
         )
         total_spent = result.scalar_one_or_none() or Decimal("0")
         total_paid = await cls.get_period_total_payments(session, period_id)
-        return max(Decimal("0"), total_spent - total_paid)
+        return calculate_billing_period_state(total_spent, total_paid).outstanding
 
     # ─── Investment Lots ─────────────────────────────────────────
 
