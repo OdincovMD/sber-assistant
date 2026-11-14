@@ -49,6 +49,12 @@ async def get_bonus(db: AsyncSession = Depends(AsyncORM.get_db)):
     return await CreditCardService.get_bonus_target_status(db)
 
 
+@router.get("/alerts")
+async def get_grace_alerts(db: AsyncSession = Depends(AsyncORM.get_db)):
+    """Предупреждения о ближайших и просроченных платежах по кредитке."""
+    return await CreditCardService.get_grace_deadline_alerts(db)
+
+
 @router.get("/periods")
 async def get_periods(db: AsyncSession = Depends(AsyncORM.get_db)):
     """Все открытые (незакрытые) биллинг-периоды."""

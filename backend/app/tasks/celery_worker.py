@@ -58,6 +58,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.celery_worker.check_ldv_alerts",
         "schedule": crontab(minute=0, hour=8),    # 08:00 утром
     },
+    "check-grace-deadlines": {
+        "task": "app.tasks.celery_worker.check_grace_deadlines",
+        "schedule": crontab(minute=0, hour=9),    # 09:00 Moscow time
+    },
 }
 celery_app.conf.timezone = "Europe/Moscow"
 
@@ -449,6 +453,56 @@ def check_ldv_alerts():
 
         except Exception as e:
             logger.error(f"check_ldv_alerts error: {e}")
+        finally:
+            await AsyncORM.close()
+
+    asyncio.run(_inner())
+
+
+@celery_app.task(name="app.tasks.celery_worker.check_grace_deadlines")
+def check_grace_deadlines():
+    """Send repayment reminders at 7, 3, 1 and 0 days, then daily overdue."""
+    async def _inner():
+        await AsyncORM.init()
+        try:
+            async with AsyncORM.get_session()() as session:
+                alerts = await CreditCardService.get_grace_deadline_alerts(
+                    session
+                )
+
+            notifications = [
+                alert for alert in alerts if alert["should_notify"]
+            ]
+            if not notifications:
+                return
+
+            lines = ["[ КРЕДИТНАЯ КАРТА: СРОК ПОГАШЕНИЯ ]", ""]
+            lines.extend(alert["message"] for alert in notifications)
+            message = "\n".join(lines)
+
+            logger.info(
+                "Grace deadline alerts ready: %s",
+                len(notifications),
+            )
+
+            if (
+                settings.vk_bot_token
+                and settings.vk_bot_token != "YOUR_VK_BOT_TOKEN"
+                and settings.vk_user_id
+            ):
+                vk = VkBotClient(
+                    settings.vk_bot_token,
+                    settings.vk_user_id,
+                    settings.vk_api_version,
+                )
+                try:
+                    await vk.send_message(message)
+                except Exception as exc:
+                    logger.error("VK grace deadline alert error: %s", exc)
+                finally:
+                    await vk.close()
+        except Exception as exc:
+            logger.error("check_grace_deadlines error: %s", exc)
         finally:
             await AsyncORM.close()
 

@@ -9,15 +9,17 @@ CreditCardService — бизнес-логика «Кредитной карус�
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import AsyncORM, BillingPeriod
+from app.services.grace_alerts import build_grace_deadline_alert
 from app.services.payment_allocation import allocate_payment_fifo
 from app.services.transaction_type import is_credit_repayment
 
@@ -435,6 +437,38 @@ class CreditCardService:
         )
 
         return available
+
+    # ─── Предупреждения по грейс-дедлайнам ─────────────────────
+
+    @classmethod
+    async def get_grace_deadline_alerts(
+        cls,
+        session: AsyncSession,
+        target_date: Optional[date] = None,
+    ) -> list[dict]:
+        """Return active deadline alerts for unpaid billing periods."""
+        check_date = target_date or datetime.now(
+            ZoneInfo("Europe/Moscow")
+        ).date()
+        periods = await AsyncORM.get_open_billing_periods(session)
+        alerts = []
+
+        for period in periods:
+            outstanding = await AsyncORM.get_period_outstanding(
+                session,
+                period.id,
+            )
+            alert = build_grace_deadline_alert(
+                period_id=period.id,
+                month=period.month,
+                grace_deadline=period.grace_deadline,
+                outstanding=outstanding,
+                target_date=check_date,
+            )
+            if alert is not None:
+                alerts.append(alert.to_dict())
+
+        return alerts
 
     # ─── Правило бонуса ─────────────────────────────────────────
 
