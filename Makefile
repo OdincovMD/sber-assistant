@@ -1,4 +1,4 @@
-.PHONY: up down rebuild logs logs-backend ps ollama-pull health psql test-webhook test
+.PHONY: up down rebuild logs logs-backend ps ollama-pull health psql test-webhook test migrate migration migration-check
 
 # Запуск всех контейнеров
 up:
@@ -47,3 +47,15 @@ test-webhook:
 # Быстрые модульные тесты без запущенной инфраструктуры
 test:
 	PYTHONPATH=backend python -m unittest discover -s backend/tests -v
+
+# Применить все миграции БД
+migrate:
+	docker compose run --rm migrate
+
+# Создать миграцию: make migration m="описание"
+migration:
+	docker compose run --rm migrate alembic -c alembic.ini revision --autogenerate -m "$(m)"
+
+# Проверить, что модели и миграции синхронизированы
+migration-check:
+	docker compose run --rm migrate alembic -c alembic.ini check

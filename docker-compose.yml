@@ -10,6 +10,8 @@ services:
       - OLLAMA_BASE_URL=http://${OLLAMA_HOST}:${OLLAMA_PORT}
       - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/${REDIS_DB}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       ollama:
@@ -29,6 +31,22 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  migrate:
+    build: ./backend
+    container_name: ${MIGRATE_CONTAINER_NAME:-sber_migrate}
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      - PYTHONPATH=/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    networks:
+      - app_network
 
   nginx:
     image: nginx:latest
@@ -134,6 +152,8 @@ services:
       - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/${REDIS_DB}
       - PYTHONPATH=/app
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

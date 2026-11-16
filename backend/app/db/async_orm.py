@@ -3,8 +3,9 @@ AsyncORM — единый класс для всех взаимодействи�
 
 Включает:
 - Инициализацию движка и сессий
-- Создание таблиц через SQLAlchemy metadata (no raw SQL)
 - CRUD операции для Transaction и BillingPeriod
+
+Схема базы данных управляется Alembic до запуска приложения.
 """
 
 import logging
@@ -22,7 +23,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import get_settings
 from app.db.models import (
-    Base, Transaction, WebhookEvent, TransactionType, BillingPeriod, BudgetLimit,
+    Transaction, WebhookEvent, TransactionType, BillingPeriod, BudgetLimit,
     CreditPayment, InvestmentLot, InvestmentPrice, FundType,
 )
 from app.services.billing_period_state import (
@@ -59,11 +60,7 @@ class AsyncORM:
             expire_on_commit=False,
         )
 
-        # Создаём таблицы если не существуют (no raw SQL)
-        async with cls._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-        logger.info("Database initialized — tables created/verified")
+        logger.info("Database connection pool initialized")
 
     @classmethod
     async def close(cls) -> None:

@@ -21,6 +21,22 @@ jobs:
     timeout-minutes: 10
     env:
       PYTHONPATH: backend
+      DATABASE_URL: postgresql+asyncpg://ci_user:ci_password@localhost:5432/ci_db
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci_user
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: ci_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_user -d ci_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Check out repository
@@ -38,6 +54,37 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt
           python -m pip check
+
+      - name: Verify migrations on a clean database
+        working-directory: backend
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Verify baseline on an existing schema
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+
+          import asyncpg
+
+          async def reset_version():
+              url = os.environ["DATABASE_URL"].replace(
+                  "postgresql+asyncpg://",
+                  "postgresql://",
+              )
+              connection = await asyncpg.connect(url)
+              try:
+                  await connection.execute("DROP TABLE alembic_version")
+              finally:
+                  await connection.close()
+
+          asyncio.run(reset_version())
+          PY
+          alembic upgrade head
+          alembic check
 
       - name: Run unit tests
         run: python -m unittest discover -s backend/tests -v

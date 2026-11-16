@@ -9,3 +9,4 @@ aiohttp
 python-dotenv
 python-dateutil
 celery[redis]
+alembic
