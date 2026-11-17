@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.config import get_settings
 from app.db.models import (
-    Transaction, WebhookEvent, TransactionType, BillingPeriod, BudgetLimit,
+    Transaction, WebhookEvent, TransactionType, AccountType, BillingPeriod, BudgetLimit,
     CreditPayment, InvestmentLot, InvestmentPrice, FundType,
 )
 from app.services.billing_period_state import (
@@ -142,7 +142,9 @@ class AsyncORM:
     ) -> Transaction:
         """Обновить транзакцию результатами парсинга LLM (v2 — с маршрутизацией по счетам)."""
         transaction.card_tail = card_tail
-        transaction.account_type = account_type
+        transaction.account_type = (
+            AccountType(account_type) if account_type is not None else None
+        )
         transaction.amount = amount
         transaction.transaction_type = transaction_type
         transaction.merchant = merchant

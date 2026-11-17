@@ -22,6 +22,7 @@ jobs:
     env:
       PYTHONPATH: backend
       DATABASE_URL: postgresql+asyncpg://ci_user:ci_password@localhost:5432/ci_db
+      RUN_INTEGRATION_TESTS: "1"
 
     services:
       postgres:
