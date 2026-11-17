@@ -103,7 +103,7 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(periods[0]["month"], "2026-10")
         self.assertEqual(periods[0]["total_spent"], 1500.0)
         self.assertEqual(periods[0]["outstanding"], 1500.0)
-        self.assertEqual(periods[0]["grace_deadline"], "2027-02-28")
+        self.assertEqual(periods[0]["grace_deadline"], "2027-01-31")
         self.assertFalse(periods[0]["is_closed"])
 
         self.assertEqual(limit_response.status_code, 200)
