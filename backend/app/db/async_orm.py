@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import (
 from app.config import get_settings
 from app.db.models import (
     Transaction, WebhookEvent, TransactionType, AccountType, BillingPeriod, BudgetLimit,
-    CreditPayment, InvestmentLot, InvestmentPrice, FundType,
+    CreditPayment, UnallocatedCredit, InvestmentLot, InvestmentPrice, FundType,
 )
 from app.services.billing_period_state import (
     BillingPeriodState,
@@ -488,6 +488,62 @@ class AsyncORM:
         total_spent = result.scalar_one_or_none() or Decimal("0")
         total_paid = await cls.get_period_total_payments(session, period_id)
         return calculate_billing_period_state(total_spent, total_paid).outstanding
+
+    @classmethod
+    async def get_total_unallocated_credit(
+        cls,
+        session: AsyncSession,
+    ) -> Decimal:
+        """Сумма авансовых платежей, ещё не применённых к покупкам."""
+        result = await session.execute(
+            select(func.coalesce(func.sum(UnallocatedCredit.remaining_amount), 0))
+            .where(UnallocatedCredit.remaining_amount > 0)
+        )
+        return result.scalar()
+
+    @classmethod
+    async def get_open_unallocated_credits_for_update(
+        cls,
+        session: AsyncSession,
+    ) -> list[UnallocatedCredit]:
+        """Заблокировать доступные авансы и вернуть их в порядке поступления."""
+        result = await session.execute(
+            select(UnallocatedCredit)
+            .where(UnallocatedCredit.remaining_amount > 0)
+            .order_by(
+                UnallocatedCredit.payment_date.asc(),
+                UnallocatedCredit.id.asc(),
+            )
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    async def store_unallocated_credit(
+        cls,
+        session: AsyncSession,
+        *,
+        transaction_id: int,
+        amount: Decimal,
+        payment_date: date,
+    ) -> UnallocatedCredit:
+        """Сохранить нераспределённый остаток платежа без дублирования."""
+        result = await session.execute(
+            select(UnallocatedCredit).where(
+                UnallocatedCredit.transaction_id == transaction_id
+            )
+        )
+        credit = result.scalar_one_or_none()
+        if credit is None:
+            credit = UnallocatedCredit(
+                transaction_id=transaction_id,
+                original_amount=amount,
+                remaining_amount=amount,
+                payment_date=payment_date,
+            )
+            session.add(credit)
+            await session.flush()
+        return credit
 
     # ─── Investment Lots ─────────────────────────────────────────
 

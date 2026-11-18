@@ -35,10 +35,12 @@ async def get_limit(db: AsyncSession = Depends(AsyncORM.get_db)):
     """Доступный кредитный лимит и статус."""
     available = await CreditCardService.get_available_limit(db)
     total_unpaid = await AsyncORM.get_total_unpaid_expenses(db)
+    unallocated_credit = await AsyncORM.get_total_unallocated_credit(db)
     return {
         "available_limit": float(available),
         "credit_limit": float(settings.credit_limit),
         "total_unpaid": float(total_unpaid),
+        "unallocated_credit": float(unallocated_credit),
         "usage_percent": round(float(total_unpaid) / settings.credit_limit * 100, 1) if settings.credit_limit > 0 else 0,
     }
 

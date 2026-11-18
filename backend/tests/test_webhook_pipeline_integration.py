@@ -28,6 +28,9 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
     def setUpClass(cls):
         asyncio.run(cls._truncate_application_tables())
 
+    def setUp(self):
+        asyncio.run(self._truncate_application_tables())
+
     @classmethod
     def tearDownClass(cls):
         asyncio.run(cls._truncate_application_tables())
@@ -43,6 +46,7 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             await connection.execute(
                 """
                 TRUNCATE TABLE
+                    unallocated_credits,
                     credit_payments,
                     webhook_events,
                     transactions,
@@ -71,6 +75,104 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             is_grace_safe=True,
             card="TEST0000",
         )
+
+    @staticmethod
+    def _parsed_payment():
+        return OllamaParseResult(
+            card_tail="0000",
+            account_type="credit",
+            amount=Decimal("2000.00"),
+            merchant="CARD PAYMENT",
+            category="Перевод между счетами",
+            is_expense=False,
+            balance_after=Decimal("152000.00"),
+            type="payment",
+            is_grace_safe=True,
+            card="TEST0000",
+        )
+
+    @staticmethod
+    def _parsed_purchase_for(amount: str, merchant: str):
+        return OllamaParseResult(
+            card_tail="0000",
+            account_type="credit",
+            amount=Decimal(amount),
+            merchant=merchant,
+            category="Другое",
+            is_expense=True,
+            balance_after=None,
+            type="purchase",
+            is_grace_safe=True,
+            card="TEST0000",
+        )
+
+    def _deliver_and_process(self, sms_text, idempotency_key, parsed_result):
+        with patch.object(process_sms_task, "delay") as delay:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={"Idempotency-Key": idempotency_key},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "queued")
+        transaction_id = response.json()["transaction_id"]
+        delay.assert_called_once_with(transaction_id)
+
+        parse_sms = AsyncMock(
+            return_value=(parsed_result, f'{{"type":"{parsed_result.type}"}}')
+        )
+        with patch.object(ollama_client, "parse_sms", new=parse_sms):
+            process_sms_task.run(transaction_id)
+        parse_sms.assert_awaited_once_with(sms_text)
+        return transaction_id
+
+    def test_payment_before_purchase_is_carried_forward(self):
+        self._deliver_and_process(
+            "01.11.2026 09:00 Пополнение кредитной карты 2000 руб.",
+            "integration-advance-payment-2026-11-01",
+            self._parsed_payment(),
+        )
+
+        with TestClient(app) as client:
+            advance_limit = client.get("/api/finance/limit").json()
+
+        self.assertEqual(advance_limit["total_unpaid"], 0.0)
+        self.assertEqual(advance_limit["unallocated_credit"], 2000.0)
+        self.assertEqual(advance_limit["available_limit"], 152000.0)
+
+        self._deliver_and_process(
+            "02.11.2026 12:00 Покупка 1500 руб. FIRST SHOP",
+            "integration-advance-purchase-1-2026-11-02",
+            self._parsed_purchase_for("1500.00", "FIRST SHOP"),
+        )
+
+        with TestClient(app) as client:
+            partly_used_limit = client.get("/api/finance/limit").json()
+
+        self.assertEqual(partly_used_limit["total_unpaid"], 0.0)
+        self.assertEqual(partly_used_limit["unallocated_credit"], 500.0)
+        self.assertEqual(partly_used_limit["available_limit"], 150500.0)
+
+        self._deliver_and_process(
+            "03.11.2026 18:00 Покупка 1000 руб. SECOND SHOP",
+            "integration-advance-purchase-2-2026-11-03",
+            self._parsed_purchase_for("1000.00", "SECOND SHOP"),
+        )
+
+        with TestClient(app) as client:
+            final_limit = client.get("/api/finance/limit").json()
+            periods = client.get("/api/finance/periods").json()
+
+        self.assertEqual(final_limit["total_unpaid"], 500.0)
+        self.assertEqual(final_limit["unallocated_credit"], 0.0)
+        self.assertEqual(final_limit["available_limit"], 149500.0)
+        self.assertEqual(len(periods), 1)
+        self.assertEqual(periods[0]["month"], "2026-11")
+        self.assertEqual(periods[0]["total_spent"], 2500.0)
+        self.assertEqual(periods[0]["total_paid"], 2000.0)
+        self.assertEqual(periods[0]["outstanding"], 500.0)
 
     def test_webhook_worker_financial_logic_and_duplicate_delivery(self):
         with patch.object(process_sms_task, "delay") as delay:

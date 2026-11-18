@@ -91,6 +91,7 @@ class FinancialSummaryResponse(BaseModel):
     credit_limit: float
     credit_usage_percent: float
     total_unpaid: float
+    unallocated_credit: float
     bonus_status: BonusStatusResponse
     open_periods: list[dict]
     spending_stats: SpendingStatsResponse

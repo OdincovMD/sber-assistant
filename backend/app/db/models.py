@@ -156,6 +156,38 @@ class CreditPayment(Base):
         return f"<CreditPayment(period={self.billing_period_id}, amount={self.amount})>"
 
 
+class UnallocatedCredit(Base):
+    """Остаток платежа, ещё не распределённый по отчётным периодам."""
+    __tablename__ = "unallocated_credits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(
+        Integer,
+        ForeignKey("transactions.id"),
+        nullable=False,
+        unique=True,
+        comment="Транзакция, создавшая авансовый остаток",
+    )
+    original_amount = Column(
+        Numeric(12, 2),
+        nullable=False,
+        comment="Исходная нераспределённая сумма",
+    )
+    remaining_amount = Column(
+        Numeric(12, 2),
+        nullable=False,
+        comment="Остаток для будущих покупок",
+    )
+    payment_date = Column(Date, nullable=False, comment="Дата исходного платежа")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return (
+            f"<UnallocatedCredit(transaction={self.transaction_id}, "
+            f"remaining={self.remaining_amount})>"
+        )
+
+
 # ─── Инвестиционный модуль ──────────────────────────────────────────────────
 
 

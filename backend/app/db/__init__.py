@@ -1,6 +1,6 @@
 from app.db.models import (
     Base, Transaction, WebhookEvent, BillingPeriod, TransactionType, AccountType,
-    DailyYield, BudgetLimit, CreditPayment,
+    DailyYield, BudgetLimit, CreditPayment, UnallocatedCredit,
     FundType, InvestmentLot, InvestmentPrice,
 )
 from app.db.async_orm import AsyncORM
@@ -15,6 +15,7 @@ __all__ = [
     "DailyYield",
     "BudgetLimit",
     "CreditPayment",
+    "UnallocatedCredit",
     "FundType",
     "InvestmentLot",
     "InvestmentPrice",

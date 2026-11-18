@@ -18,7 +18,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import AsyncORM, BillingPeriod
+from app.db import AsyncORM, BillingPeriod, CreditPayment
 from app.services.grace_alerts import build_grace_deadline_alert
 from app.services.payment_allocation import allocate_payment_fifo
 from app.services.transaction_type import is_credit_repayment
@@ -241,10 +241,19 @@ class CreditCardService:
         current_total = await AsyncORM.get_month_expenses_total(session, billing_month)
         await AsyncORM.update_billing_period_spent(session, period.id, current_total)
         was_closed = bool(period.is_closed)
+        advance_applied = await cls._apply_unallocated_credit(
+            session,
+            period.id,
+        )
         period_state = await AsyncORM.reconcile_billing_period_status(
             session,
             period.id,
         )
+
+        if advance_applied > 0:
+            warnings.append(
+                f"Авансовый платёж применён к покупке: {advance_applied}₽"
+            )
 
         if was_closed and period_state and not period_state.is_closed:
             warnings.append(
@@ -317,8 +326,6 @@ class CreditCardService:
         transaction_date: Optional[date] = None,
     ) -> dict:
         """Обработка платежа по кредитной карте (погашение задолженности)."""
-        from app.db import CreditPayment
-
         warnings = []
         errors = []
 
@@ -326,10 +333,6 @@ class CreditCardService:
 
         # Периоды уже отсортированы по ближайшему дедлайну.
         open_periods = await AsyncORM.get_open_billing_periods(session)
-        if not open_periods:
-            warnings.append("Нет открытых периодов для зачисления платежа")
-            return {"success": True, "billing_period": None, "warnings": warnings, "errors": []}
-
         period_by_id = {period.id: period for period in open_periods}
         period_debts = []
         for period in open_periods:
@@ -340,17 +343,6 @@ class CreditCardService:
             period_debts.append((period.id, outstanding))
 
         allocations, unallocated = allocate_payment_fifo(amount, period_debts)
-        if not allocations:
-            warnings.append("Нет непогашенной задолженности для распределения платежа")
-            return {
-                "success": True,
-                "billing_period": None,
-                "warnings": warnings,
-                "errors": [],
-                "payment_allocations": [],
-                "unallocated_amount": amount,
-            }
-
         allocation_data = []
         allocated_total = Decimal("0")
         outstanding_by_id = dict(period_debts)
@@ -377,6 +369,14 @@ class CreditCardService:
                 }
             )
 
+        if unallocated > 0:
+            await AsyncORM.store_unallocated_credit(
+                session,
+                transaction_id=transaction_id,
+                amount=unallocated,
+                payment_date=tx_date,
+            )
+
         await session.flush()
 
         for allocation in allocations:
@@ -393,16 +393,23 @@ class CreditCardService:
         total_outstanding_after = sum(
             (outstanding for _, outstanding in period_debts), Decimal("0")
         ) - allocated_total
-        warnings.append(
-            f"Платёж распределён: {allocated_total}₽. "
-            f"Общий остаток долга: {total_outstanding_after}₽"
-        )
+        if allocated_total > 0:
+            warnings.append(
+                f"Платёж распределён: {allocated_total}₽. "
+                f"Общий остаток долга: {total_outstanding_after}₽"
+            )
+        else:
+            warnings.append("Нет непогашенной задолженности для распределения платежа")
         if unallocated > 0:
             warnings.append(
-                f"Сверх учтённой задолженности осталось {unallocated}₽"
+                f"В авансовый остаток зачислено {unallocated}₽"
             )
 
-        target_period = period_by_id[allocations[0].period_id]
+        target_period = (
+            period_by_id[allocations[0].period_id]
+            if allocations
+            else None
+        )
         logger.info(
             f"Платёж {transaction_id}: распределено {allocated_total}₽ "
             f"по {len(allocations)} периодам, остаток платежа {unallocated}₽"
@@ -417,6 +424,45 @@ class CreditCardService:
             "unallocated_amount": unallocated,
         }
 
+    @classmethod
+    async def _apply_unallocated_credit(
+        cls,
+        session: AsyncSession,
+        period_id: int,
+    ) -> Decimal:
+        """Применить ранее внесённый аванс к новому долгу периода."""
+        outstanding = await AsyncORM.get_period_outstanding(session, period_id)
+        if outstanding <= 0:
+            return Decimal("0")
+
+        credits = await AsyncORM.get_open_unallocated_credits_for_update(session)
+        applied = Decimal("0")
+
+        for credit in credits:
+            if outstanding <= 0:
+                break
+
+            amount = min(Decimal(str(credit.remaining_amount)), outstanding)
+            session.add(
+                CreditPayment(
+                    billing_period_id=period_id,
+                    transaction_id=credit.transaction_id,
+                    amount=amount,
+                    payment_date=credit.payment_date,
+                )
+            )
+            credit.remaining_amount -= amount
+            outstanding -= amount
+            applied += amount
+
+        if applied > 0:
+            await session.flush()
+            logger.info(
+                f"К периоду {period_id} применён авансовый остаток {applied}₽"
+            )
+
+        return applied
+
     # ─── Правило лимита ─────────────────────────────────────────
 
     @classmethod
@@ -424,15 +470,20 @@ class CreditCardService:
         """
         Доступный остаток кредитного лимита.
 
-        Формула: CREDIT_LIMIT - сумма всех непогашенных расходов
-                 (по незакрытым BillingPeriod).
+        Формула: CREDIT_LIMIT - непогашенные расходы + авансовый остаток.
         """
         total_unpaid = await AsyncORM.get_total_unpaid_expenses(session)
-        available = Decimal(str(settings.credit_limit)) - total_unpaid
+        unallocated_credit = await AsyncORM.get_total_unallocated_credit(session)
+        available = (
+            Decimal(str(settings.credit_limit))
+            - total_unpaid
+            + unallocated_credit
+        )
 
         logger.info(
             f"Лимит: {settings.credit_limit}₽ | "
             f"Непогашено: {total_unpaid}₽ | "
+            f"Аванс: {unallocated_credit}₽ | "
             f"Доступно: {available}₽"
         )
 
@@ -581,6 +632,7 @@ class CreditCardService:
         """
         available = await cls.get_available_limit(session)
         total_unpaid = await AsyncORM.get_total_unpaid_expenses(session)
+        unallocated_credit = await AsyncORM.get_total_unallocated_credit(session)
         bonus = await cls.get_bonus_target_status(session)
         open_periods = await AsyncORM.get_open_billing_periods(session)
         spending_stats = await cls.get_spending_statistics(session)
@@ -612,6 +664,7 @@ class CreditCardService:
             "credit_limit": float(settings.credit_limit),
             "credit_usage_percent": round(credit_usage, 1),
             "total_unpaid": float(total_unpaid),
+            "unallocated_credit": float(unallocated_credit),
             "bonus_status": bonus,
             "open_periods": periods_data,
             "spending_stats": spending_stats,
