@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import select
@@ -278,6 +278,17 @@ def process_sms_task(transaction_id: int):
                         for warning in process_result["warnings"]:
                             logger.warning(f"Предупреждение: {warning}")
 
+                    processing_errors = process_result.get("errors") or []
+                    transaction.processing_status = (
+                        "rejected" if processing_errors else "completed"
+                    )
+                    transaction.processing_error = (
+                        "; ".join(processing_errors)
+                        if processing_errors
+                        else None
+                    )
+                    transaction.processed_at = datetime.now(timezone.utc)
+
                     # Сохраняем все изменения в БД до отправки уведомлений
                     await session.commit()
 
@@ -356,9 +367,41 @@ def process_sms_task(transaction_id: int):
                         raw_llm_response=raw_response,
                         is_parsed=False,
                     )
+                    transaction.processing_status = "failed"
+                    transaction.processing_error = (
+                        "LLM response could not be parsed"
+                    )
+                    transaction.processed_at = datetime.now(timezone.utc)
                     await session.commit()
                     logger.warning(f"Парсинг FAILED для транзакции {transaction_id} — не удалось извлечь данные из ответа LLM")
 
+        except Exception as exc:
+            logger.exception(
+                "Background processing failed for transaction %s",
+                transaction_id,
+            )
+            try:
+                async with AsyncORM.get_session()() as failure_session:
+                    failed_transaction = (
+                        await AsyncORM.get_transaction_by_id_for_update(
+                            failure_session,
+                            transaction_id,
+                        )
+                    )
+                    if failed_transaction and not failed_transaction.is_parsed:
+                        failed_transaction.processing_status = "failed"
+                        failed_transaction.processing_error = (
+                            "Background processing failed: "
+                            f"{type(exc).__name__}"
+                        )
+                        failed_transaction.processed_at = datetime.now(timezone.utc)
+                        await failure_session.commit()
+            except Exception:
+                logger.exception(
+                    "Could not persist failure status for transaction %s",
+                    transaction_id,
+                )
+            raise
         finally:
             await AsyncORM.close()
 

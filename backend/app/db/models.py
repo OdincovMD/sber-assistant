@@ -73,6 +73,24 @@ class Transaction(Base):
     raw_llm_response = Column(Text, nullable=True, comment="Сырой JSON ответ от Ollama")
     is_parsed = Column(Boolean, default=False, comment="Успешно ли распарсена СМС")
 
+    processing_status = Column(
+        String(20),
+        nullable=False,
+        default="queued",
+        server_default="queued",
+        comment="Статус фоновой обработки транзакции",
+    )
+    processing_error = Column(
+        Text,
+        nullable=True,
+        comment="Причина ошибки или отклонения транзакции",
+    )
+    processed_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Время завершения фоновой обработки",
+    )
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     billing_period = relationship("BillingPeriod", back_populates="transactions")

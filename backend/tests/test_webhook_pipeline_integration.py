@@ -126,7 +126,122 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         with patch.object(ollama_client, "parse_sms", new=parse_sms):
             process_sms_task.run(transaction_id)
         parse_sms.assert_awaited_once_with(sms_text)
+
+        with TestClient(app) as client:
+            status_response = client.get(
+                f"/api/transactions/{transaction_id}"
+            )
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["status"], "completed")
+        self.assertIsNotNone(status_response.json()["processed_at"])
         return transaction_id
+
+    def test_unparseable_sms_exposes_failed_status(self):
+        sms_text = "19.11.2026 Нераспознанное банковское сообщение"
+        with patch.object(process_sms_task, "delay") as delay:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={
+                        "Idempotency-Key": "integration-unparseable-2026-11-19"
+                    },
+                )
+
+        transaction_id = response.json()["transaction_id"]
+        delay.assert_called_once_with(transaction_id)
+
+        parse_sms = AsyncMock(return_value=(None, "not-json"))
+        with patch.object(ollama_client, "parse_sms", new=parse_sms):
+            process_sms_task.run(transaction_id)
+
+        with TestClient(app) as client:
+            status_response = client.get(
+                f"/api/transactions/{transaction_id}"
+            )
+            missing_response = client.get("/api/transactions/999999")
+
+        self.assertEqual(status_response.status_code, 200)
+        status = status_response.json()
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(
+            status["error"],
+            "LLM response could not be parsed",
+        )
+        self.assertIsNotNone(status["processed_at"])
+        self.assertEqual(missing_response.status_code, 404)
+
+    def test_financial_validation_exposes_rejected_status(self):
+        sms_text = "19.11.2026 14:00 Покупка 200000 руб. LARGE SHOP"
+        parsed_result = self._parsed_purchase_for(
+            "200000.00",
+            "LARGE SHOP",
+        )
+        with patch.object(process_sms_task, "delay") as delay:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={
+                        "Idempotency-Key": "integration-rejected-2026-11-19"
+                    },
+                )
+
+        transaction_id = response.json()["transaction_id"]
+        delay.assert_called_once_with(transaction_id)
+
+        parse_sms = AsyncMock(
+            return_value=(parsed_result, '{"type":"purchase"}')
+        )
+        with patch.object(ollama_client, "parse_sms", new=parse_sms):
+            process_sms_task.run(transaction_id)
+
+        with TestClient(app) as client:
+            status_response = client.get(
+                f"/api/transactions/{transaction_id}"
+            )
+            periods = client.get("/api/finance/periods").json()
+
+        self.assertEqual(status_response.status_code, 200)
+        status = status_response.json()
+        self.assertEqual(status["status"], "rejected")
+        self.assertIn("Превышение лимита", status["error"])
+        self.assertEqual(status["amount"], 200000.0)
+        self.assertEqual(periods, [])
+
+    def test_worker_exception_is_persisted_as_failed_status(self):
+        sms_text = "19.11.2026 15:00 Сообщение для проверки сбоя"
+        with patch.object(process_sms_task, "delay") as delay:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={
+                        "Idempotency-Key": "integration-worker-error-2026-11-19"
+                    },
+                )
+
+        transaction_id = response.json()["transaction_id"]
+        delay.assert_called_once_with(transaction_id)
+
+        parse_sms = AsyncMock(side_effect=RuntimeError("Ollama unavailable"))
+        with patch.object(ollama_client, "parse_sms", new=parse_sms):
+            with self.assertRaises(RuntimeError):
+                process_sms_task.run(transaction_id)
+
+        with TestClient(app) as client:
+            status_response = client.get(
+                f"/api/transactions/{transaction_id}"
+            )
+
+        self.assertEqual(status_response.status_code, 200)
+        status = status_response.json()
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(
+            status["error"],
+            "Background processing failed: RuntimeError",
+        )
+        self.assertIsNotNone(status["processed_at"])
 
     def test_payment_before_purchase_is_carried_forward(self):
         self._deliver_and_process(
@@ -188,12 +303,31 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         transaction_id = response.json()["transaction_id"]
         delay.assert_called_once_with(transaction_id)
 
+        with TestClient(app) as client:
+            queued_response = client.get(
+                f"/api/transactions/{transaction_id}"
+            )
+        self.assertEqual(queued_response.status_code, 200)
+        self.assertEqual(queued_response.json()["status"], "queued")
+        self.assertIsNone(queued_response.json()["processed_at"])
+
         parse_sms = AsyncMock(
             return_value=(self._parsed_purchase(), '{"type":"purchase"}')
         )
         with patch.object(ollama_client, "parse_sms", new=parse_sms):
             process_sms_task.run(transaction_id)
         parse_sms.assert_awaited_once_with(self.sms_text)
+
+        with TestClient(app) as client:
+            completed_response = client.get(
+                f"/api/transactions/{transaction_id}"
+            )
+        self.assertEqual(completed_response.status_code, 200)
+        completed = completed_response.json()
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["amount"], 1500.0)
+        self.assertEqual(completed["transaction_type"], "purchase")
+        self.assertIsNotNone(completed["processed_at"])
 
         with TestClient(app) as client:
             periods_response = client.get("/api/finance/periods")

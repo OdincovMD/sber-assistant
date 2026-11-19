@@ -52,6 +52,24 @@ class SmsWebhookResponse(BaseModel):
     transaction_id: Optional[int] = None
 
 
+class TransactionStatusResponse(BaseModel):
+    """Состояние и безопасные результаты фоновой обработки СМС."""
+    id: int
+    status: str
+    created_at: datetime
+    processed_at: Optional[datetime] = None
+    account_type: Optional[str] = None
+    amount: Optional[float] = None
+    transaction_type: Optional[str] = None
+    merchant: Optional[str] = None
+    category: Optional[str] = None
+    is_expense: Optional[bool] = None
+    is_grace_safe: Optional[bool] = None
+    billing_period_id: Optional[int] = None
+    grace_deadline: Optional[date] = None
+    error: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     """Ответ health check."""
     status: str

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import AsyncORM
-from app.routers import health, webhook, finance, investment
+from app.routers import health, webhook, finance, investment, transactions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,5 +43,6 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(webhook.router)
+app.include_router(transactions.router)
 app.include_router(finance.router)
 app.include_router(investment.router)
