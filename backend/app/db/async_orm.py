@@ -185,6 +185,56 @@ class AsyncORM:
         return result.scalar_one_or_none()
 
     @classmethod
+    async def get_transaction_history(
+        cls,
+        session: AsyncSession,
+        *,
+        limit: int,
+        offset: int,
+        processing_status: Optional[str] = None,
+        account_type: Optional[str] = None,
+        transaction_type: Optional[str] = None,
+        is_expense: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> tuple[list[Transaction], int]:
+        """Вернуть страницу истории операций и общее число совпадений."""
+        filters = []
+        if processing_status is not None:
+            filters.append(Transaction.processing_status == processing_status)
+        if account_type is not None:
+            filters.append(Transaction.account_type == AccountType(account_type))
+        if transaction_type is not None:
+            filters.append(
+                Transaction.transaction_type == TransactionType(transaction_type)
+            )
+        if is_expense is not None:
+            filters.append(Transaction.is_expense == is_expense)
+
+        # Финансовый день пользователя считается в московском часовом поясе.
+        transaction_day = func.date(
+            func.timezone("Europe/Moscow", Transaction.created_at)
+        )
+        if date_from is not None:
+            filters.append(transaction_day >= date_from)
+        if date_to is not None:
+            filters.append(transaction_day <= date_to)
+
+        total_result = await session.execute(
+            select(func.count(Transaction.id)).where(*filters)
+        )
+        total = total_result.scalar_one()
+
+        result = await session.execute(
+            select(Transaction)
+            .where(*filters)
+            .order_by(Transaction.created_at.desc(), Transaction.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all()), total
+
+    @classmethod
     async def get_or_create_webhook_event(
         cls,
         session: AsyncSession,

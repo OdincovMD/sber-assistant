@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -55,7 +55,7 @@ class SmsWebhookResponse(BaseModel):
 class TransactionStatusResponse(BaseModel):
     """Состояние и безопасные результаты фоновой обработки СМС."""
     id: int
-    status: str
+    status: Literal["queued", "completed", "rejected", "failed"]
     created_at: datetime
     processed_at: Optional[datetime] = None
     account_type: Optional[str] = None
@@ -68,6 +68,14 @@ class TransactionStatusResponse(BaseModel):
     billing_period_id: Optional[int] = None
     grace_deadline: Optional[date] = None
     error: Optional[str] = None
+
+
+class TransactionHistoryResponse(BaseModel):
+    """Страница истории транзакций с метаданными пагинации."""
+    items: list[TransactionStatusResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class HealthResponse(BaseModel):

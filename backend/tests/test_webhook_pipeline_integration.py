@@ -279,6 +279,37 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         with TestClient(app) as client:
             final_limit = client.get("/api/finance/limit").json()
             periods = client.get("/api/finance/periods").json()
+            history = client.get("/api/transactions").json()
+            expenses = client.get(
+                "/api/transactions",
+                params={
+                    "status": "completed",
+                    "account_type": "credit",
+                    "is_expense": "true",
+                },
+            ).json()
+            dated = client.get(
+                "/api/transactions",
+                params={
+                    "date_from": "2026-11-02",
+                    "date_to": "2026-11-02",
+                },
+            ).json()
+            payment = client.get(
+                "/api/transactions",
+                params={"transaction_type": "payment"},
+            ).json()
+            second_page = client.get(
+                "/api/transactions",
+                params={"limit": 1, "offset": 1},
+            ).json()
+            invalid_range = client.get(
+                "/api/transactions",
+                params={
+                    "date_from": "2026-11-03",
+                    "date_to": "2026-11-02",
+                },
+            )
 
         self.assertEqual(final_limit["total_unpaid"], 500.0)
         self.assertEqual(final_limit["unallocated_credit"], 0.0)
@@ -288,6 +319,27 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(periods[0]["total_spent"], 2500.0)
         self.assertEqual(periods[0]["total_paid"], 2000.0)
         self.assertEqual(periods[0]["outstanding"], 500.0)
+
+        self.assertEqual(history["total"], 3)
+        self.assertEqual(history["limit"], 20)
+        self.assertEqual(history["offset"], 0)
+        self.assertEqual(
+            [item["merchant"] for item in history["items"]],
+            ["SECOND SHOP", "FIRST SHOP", "CARD PAYMENT"],
+        )
+
+        self.assertEqual(expenses["total"], 2)
+        self.assertTrue(
+            all(item["is_expense"] for item in expenses["items"])
+        )
+        self.assertEqual(dated["total"], 1)
+        self.assertEqual(dated["items"][0]["merchant"], "FIRST SHOP")
+        self.assertEqual(payment["total"], 1)
+        self.assertEqual(payment["items"][0]["merchant"], "CARD PAYMENT")
+        self.assertEqual(second_page["total"], 3)
+        self.assertEqual(len(second_page["items"]), 1)
+        self.assertEqual(second_page["items"][0]["merchant"], "FIRST SHOP")
+        self.assertEqual(invalid_range.status_code, 422)
 
     def test_webhook_worker_financial_logic_and_duplicate_delivery(self):
         with patch.object(process_sms_task, "delay") as delay:
