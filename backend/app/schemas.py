@@ -78,6 +78,12 @@ class TransactionHistoryResponse(BaseModel):
     offset: int
 
 
+class TransactionRetryResponse(BaseModel):
+    """Результат повторной постановки транзакции в очередь."""
+    status: Literal["queued"] = "queued"
+    transaction_id: int
+
+
 class HealthResponse(BaseModel):
     """Ответ health check."""
     status: str

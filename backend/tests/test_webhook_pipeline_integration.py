@@ -171,6 +171,71 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(status["processed_at"])
         self.assertEqual(missing_response.status_code, 404)
 
+        with patch.object(
+            process_sms_task,
+            "delay",
+            side_effect=RuntimeError("Redis unavailable"),
+        ) as unavailable_delay:
+            with TestClient(app) as client:
+                unavailable_response = client.post(
+                    f"/api/transactions/{transaction_id}/retry"
+                )
+                still_failed = client.get(
+                    f"/api/transactions/{transaction_id}"
+                ).json()
+
+        unavailable_delay.assert_called_once_with(transaction_id)
+        self.assertEqual(unavailable_response.status_code, 503)
+        self.assertEqual(still_failed["status"], "failed")
+        self.assertEqual(
+            still_failed["error"],
+            "Background queue unavailable: RuntimeError",
+        )
+
+        with patch.object(process_sms_task, "delay") as retry_delay:
+            with TestClient(app) as client:
+                retry_response = client.post(
+                    f"/api/transactions/{transaction_id}/retry"
+                )
+                duplicate_retry = client.post(
+                    f"/api/transactions/{transaction_id}/retry"
+                )
+                queued_status = client.get(
+                    f"/api/transactions/{transaction_id}"
+                ).json()
+
+        retry_delay.assert_called_once_with(transaction_id)
+        self.assertEqual(retry_response.status_code, 202)
+        self.assertEqual(
+            retry_response.json(),
+            {"status": "queued", "transaction_id": transaction_id},
+        )
+        self.assertEqual(duplicate_retry.status_code, 409)
+        self.assertEqual(queued_status["status"], "queued")
+        self.assertIsNone(queued_status["error"])
+        self.assertIsNone(queued_status["processed_at"])
+
+        recovered_parse = AsyncMock(
+            return_value=(
+                self._parsed_purchase_for("250.00", "RECOVERED SHOP"),
+                '{"type":"purchase"}',
+            )
+        )
+        with patch.object(ollama_client, "parse_sms", new=recovered_parse):
+            process_sms_task.run(transaction_id)
+
+        with TestClient(app) as client:
+            recovered = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+            completed_retry = client.post(
+                f"/api/transactions/{transaction_id}/retry"
+            )
+
+        self.assertEqual(recovered["status"], "completed")
+        self.assertEqual(recovered["merchant"], "RECOVERED SHOP")
+        self.assertEqual(completed_retry.status_code, 409)
+
     def test_financial_validation_exposes_rejected_status(self):
         sms_text = "19.11.2026 14:00 Покупка 200000 руб. LARGE SHOP"
         parsed_result = self._parsed_purchase_for(

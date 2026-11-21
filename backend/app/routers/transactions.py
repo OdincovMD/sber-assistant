@@ -1,6 +1,8 @@
-"""Read-only transaction status and history endpoints."""
+"""Transaction status, history, and recovery endpoints."""
 
+import logging
 from datetime import date
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,10 +12,12 @@ from app.db import AsyncORM
 from app.schemas import (
     AccountType,
     TransactionHistoryResponse,
+    TransactionRetryResponse,
     TransactionStatusResponse,
 )
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["transactions"])
 
 
@@ -101,3 +105,56 @@ async def get_transaction_status(
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     return _to_response(transaction)
+
+
+@router.post(
+    "/transactions/{transaction_id}/retry",
+    response_model=TransactionRetryResponse,
+    status_code=202,
+)
+async def retry_failed_transaction(
+    transaction_id: int,
+    db: AsyncSession = Depends(AsyncORM.get_db),
+):
+    """Повторно поставить упавшую транзакцию в очередь обработки."""
+    from app.tasks.celery_worker import process_sms_task
+
+    transaction = await AsyncORM.get_transaction_by_id_for_update(
+        db,
+        transaction_id,
+    )
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if transaction.processing_status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed transactions can be retried",
+        )
+
+    transaction.processing_status = "queued"
+    transaction.processing_error = None
+    transaction.processed_at = None
+
+    # Worker должен увидеть статус queued до публикации задачи в Redis.
+    await db.commit()
+
+    try:
+        process_sms_task.delay(transaction.id)
+    except Exception as exc:
+        logger.exception(
+            "Could not requeue transaction %s",
+            transaction.id,
+        )
+        transaction.processing_status = "failed"
+        transaction.processing_error = (
+            "Background queue unavailable: "
+            f"{type(exc).__name__}"
+        )
+        transaction.processed_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Transaction remains failed because background processing is unavailable",
+        ) from exc
+
+    return TransactionRetryResponse(transaction_id=transaction.id)
