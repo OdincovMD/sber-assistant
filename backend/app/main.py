@@ -1,11 +1,12 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import AsyncORM
 from app.routers import health, webhook, finance, investment, transactions
+from app.security import configured_api_key, require_api_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Lifecycle: инициализация БД при старте, закрытие при остановке."""
     logger.info("Sber Grace Assistant — Backend starting...")
+    if configured_api_key() is None:
+        logger.warning(
+            "API_KEY is not configured: financial API authentication is disabled"
+        )
     await AsyncORM.init()
     logger.info("Backend ready")
     yield
@@ -42,7 +47,8 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
-app.include_router(webhook.router)
-app.include_router(transactions.router)
-app.include_router(finance.router)
-app.include_router(investment.router)
+protected = [Depends(require_api_key)]
+app.include_router(webhook.router, dependencies=protected)
+app.include_router(transactions.router, dependencies=protected)
+app.include_router(finance.router, dependencies=protected)
+app.include_router(investment.router, dependencies=protected)

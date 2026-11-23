@@ -136,6 +136,36 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(status_response.json()["processed_at"])
         return transaction_id
 
+    def test_api_key_protects_financial_routes_but_not_health(self):
+        with patch.dict(
+            os.environ,
+            {"API_KEY": "integration-api-secret"},
+        ):
+            with TestClient(app) as client:
+                health_response = client.get("/health")
+                missing_key = client.get("/api/transactions")
+                wrong_key = client.get(
+                    "/api/transactions",
+                    headers={"X-API-Key": "wrong-secret"},
+                )
+                authorized = client.get(
+                    "/api/transactions",
+                    headers={"X-API-Key": "integration-api-secret"},
+                )
+                openapi = client.get("/openapi.json")
+
+        self.assertEqual(health_response.status_code, 200)
+        self.assertEqual(missing_key.status_code, 401)
+        self.assertEqual(wrong_key.status_code, 401)
+        self.assertEqual(wrong_key.headers["www-authenticate"], "ApiKey")
+        self.assertEqual(authorized.status_code, 200)
+        self.assertEqual(authorized.json()["total"], 0)
+        self.assertEqual(openapi.status_code, 200)
+        self.assertIn(
+            "APIKeyHeader",
+            openapi.json()["components"]["securitySchemes"],
+        )
+
     def test_unparseable_sms_exposes_failed_status(self):
         sms_text = "19.11.2026 Нераспознанное банковское сообщение"
         with patch.object(process_sms_task, "delay") as delay:
