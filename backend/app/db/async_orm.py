@@ -9,7 +9,7 @@ AsyncORM — единый класс для всех взаимодействи�
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -183,6 +183,55 @@ class AsyncORM:
             .with_for_update()
         )
         return result.scalar_one_or_none()
+
+    @classmethod
+    async def claim_stale_queued_transactions(
+        cls,
+        session: AsyncSession,
+        *,
+        stale_before: datetime,
+        max_recovery_attempts: int,
+        limit: int,
+    ) -> tuple[list[int], list[int]]:
+        """Забрать зависшие queued-транзакции для повтора или завершения.
+
+        ``SKIP LOCKED`` не позволяет watchdog-задаче повторно поставить в
+        очередь транзакцию, которую в этот момент действительно обрабатывает
+        worker: worker держит строковую блокировку до коммита.
+        """
+        result = await session.execute(
+            select(Transaction)
+            .where(
+                Transaction.processing_status == "queued",
+                Transaction.is_parsed.is_not(True),
+                Transaction.queued_at <= stale_before,
+            )
+            .order_by(Transaction.queued_at, Transaction.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        transactions = list(result.scalars().all())
+        requeue_ids: list[int] = []
+        failed_ids: list[int] = []
+        now = datetime.now(timezone.utc)
+
+        for transaction in transactions:
+            if transaction.queue_recovery_attempts >= max_recovery_attempts:
+                transaction.processing_status = "failed"
+                transaction.processing_error = (
+                    "Background task was lost after "
+                    f"{max_recovery_attempts} automatic recovery attempts"
+                )
+                transaction.processed_at = now
+                failed_ids.append(transaction.id)
+                continue
+
+            transaction.queue_recovery_attempts += 1
+            transaction.queued_at = now
+            requeue_ids.append(transaction.id)
+
+        await session.flush()
+        return requeue_ids, failed_ids
 
     @classmethod
     async def get_transaction_history(

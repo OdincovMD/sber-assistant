@@ -57,6 +57,8 @@ class TransactionStatusResponse(BaseModel):
     id: int
     status: Literal["queued", "completed", "rejected", "failed"]
     created_at: datetime
+    queued_at: datetime
+    queue_recovery_attempts: int
     processed_at: Optional[datetime] = None
     account_type: Optional[str] = None
     amount: Optional[float] = None

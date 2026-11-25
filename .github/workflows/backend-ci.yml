@@ -101,6 +101,7 @@ jobs:
 
           assert app.title == "Sber Grace Assistant"
           assert "check-grace-deadlines" in celery_app.conf.beat_schedule
+          assert "recover-stale-transactions" in celery_app.conf.beat_schedule
           print("FastAPI and Celery imports are healthy")
           PY
 

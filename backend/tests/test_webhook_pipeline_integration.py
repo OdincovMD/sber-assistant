@@ -13,7 +13,11 @@ if RUN_INTEGRATION_TESTS:
     from app.main import app
     from app.schemas import OllamaParseResult
     from app.services.ollama_client import ollama_client
-    from app.tasks.celery_worker import process_sms_task
+    from app.tasks.celery_worker import (
+        QUEUE_RECOVERY_MAX_ATTEMPTS,
+        process_sms_task,
+        recover_stale_transactions,
+    )
 
 
 @unittest.skipUnless(
@@ -57,6 +61,27 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
                     investment_lots
                 RESTART IDENTITY CASCADE
                 """
+            )
+        finally:
+            await connection.close()
+
+    @staticmethod
+    async def _make_transaction_stale(transaction_id, recovery_attempts):
+        database_url = os.environ["DATABASE_URL"].replace(
+            "postgresql+asyncpg://",
+            "postgresql://",
+        )
+        connection = await asyncpg.connect(database_url)
+        try:
+            await connection.execute(
+                """
+                UPDATE transactions
+                SET queued_at = CURRENT_TIMESTAMP - INTERVAL '1 hour',
+                    queue_recovery_attempts = $2
+                WHERE id = $1
+                """,
+                transaction_id,
+                recovery_attempts,
             )
         finally:
             await connection.close()
@@ -337,6 +362,64 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             "Background processing failed: RuntimeError",
         )
         self.assertIsNotNone(status["processed_at"])
+
+    def test_stale_queued_transaction_is_recovered_then_failed(self):
+        sms_text = "25.11.2026 18:00 Сообщение для проверки очереди"
+        with patch.object(process_sms_task, "delay") as initial_delay:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={
+                        "Idempotency-Key": "integration-stale-queue-2026-11-25"
+                    },
+                )
+
+        transaction_id = response.json()["transaction_id"]
+        initial_delay.assert_called_once_with(transaction_id)
+
+        with TestClient(app) as client:
+            initially_queued = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+        self.assertEqual(initially_queued["status"], "queued")
+        self.assertEqual(initially_queued["queue_recovery_attempts"], 0)
+        self.assertIsNotNone(initially_queued["queued_at"])
+
+        asyncio.run(self._make_transaction_stale(transaction_id, 0))
+        with patch.object(process_sms_task, "delay") as recovery_delay:
+            recover_stale_transactions.run()
+        recovery_delay.assert_called_once_with(transaction_id)
+
+        with TestClient(app) as client:
+            recovered = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+        self.assertEqual(recovered["status"], "queued")
+        self.assertEqual(recovered["queue_recovery_attempts"], 1)
+        self.assertIsNone(recovered["processed_at"])
+
+        asyncio.run(
+            self._make_transaction_stale(
+                transaction_id,
+                QUEUE_RECOVERY_MAX_ATTEMPTS,
+            )
+        )
+        with patch.object(process_sms_task, "delay") as exhausted_delay:
+            recover_stale_transactions.run()
+        exhausted_delay.assert_not_called()
+
+        with TestClient(app) as client:
+            exhausted = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+        self.assertEqual(exhausted["status"], "failed")
+        self.assertEqual(
+            exhausted["error"],
+            "Background task was lost after "
+            f"{QUEUE_RECOVERY_MAX_ATTEMPTS} automatic recovery attempts",
+        )
+        self.assertIsNotNone(exhausted["processed_at"])
 
     def test_payment_before_purchase_is_carried_forward(self):
         self._deliver_and_process(

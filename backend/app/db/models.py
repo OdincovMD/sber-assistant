@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import (
     Column, Integer, String, Numeric, DateTime, Date, Float,
-    Boolean, Enum, Text, ForeignKey, UniqueConstraint, func,
+    Boolean, Enum, Text, ForeignKey, Index, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -50,6 +50,13 @@ class BillingPeriod(Base):
 class Transaction(Base):
     """Транзакция, извлечённая из СМС."""
     __tablename__ = "transactions"
+    __table_args__ = (
+        Index(
+            "ix_transactions_queue_recovery",
+            "processing_status",
+            "queued_at",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     billing_period_id = Column(Integer, ForeignKey("billing_periods.id"), nullable=True)
@@ -89,6 +96,19 @@ class Transaction(Base):
         DateTime(timezone=True),
         nullable=True,
         comment="Время завершения фоновой обработки",
+    )
+    queued_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        comment="Время последней постановки фоновой задачи в очередь",
+    )
+    queue_recovery_attempts = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Число автоматических повторных постановок в очередь",
     )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

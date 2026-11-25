@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import select
@@ -19,6 +19,14 @@ from app.services.analyst_service import FinancialAnalyst
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+QUEUE_STALE_MINUTES = int(os.getenv("QUEUE_STALE_MINUTES", "10"))
+QUEUE_RECOVERY_MAX_ATTEMPTS = int(
+    os.getenv("QUEUE_RECOVERY_MAX_ATTEMPTS", "3")
+)
+QUEUE_RECOVERY_BATCH_SIZE = int(
+    os.getenv("QUEUE_RECOVERY_BATCH_SIZE", "100")
+)
 
 # Маппинг строки type → enum
 TYPE_MAPPING = {
@@ -61,6 +69,10 @@ celery_app.conf.beat_schedule = {
     "check-grace-deadlines": {
         "task": "app.tasks.celery_worker.check_grace_deadlines",
         "schedule": crontab(minute=0, hour=9),    # 09:00 Moscow time
+    },
+    "recover-stale-transactions": {
+        "task": "app.tasks.celery_worker.recover_stale_transactions",
+        "schedule": crontab(minute="*/5"),
     },
 }
 celery_app.conf.timezone = "Europe/Moscow"
@@ -402,6 +414,50 @@ def process_sms_task(transaction_id: int):
                     transaction_id,
                 )
             raise
+        finally:
+            await AsyncORM.close()
+
+    asyncio.run(_inner())
+
+
+@celery_app.task(name="app.tasks.celery_worker.recover_stale_transactions")
+def recover_stale_transactions():
+    """Повторно поставить потерянные queued-задачи или завершить их ошибкой."""
+    async def _inner():
+        await AsyncORM.init()
+        try:
+            stale_before = datetime.now(timezone.utc) - timedelta(
+                minutes=QUEUE_STALE_MINUTES
+            )
+            async with AsyncORM.get_session()() as session:
+                requeue_ids, failed_ids = (
+                    await AsyncORM.claim_stale_queued_transactions(
+                        session,
+                        stale_before=stale_before,
+                        max_recovery_attempts=QUEUE_RECOVERY_MAX_ATTEMPTS,
+                        limit=QUEUE_RECOVERY_BATCH_SIZE,
+                    )
+                )
+                # Освобождаем блокировки до публикации новых задач в Redis.
+                await session.commit()
+
+            for transaction_id in requeue_ids:
+                try:
+                    process_sms_task.delay(transaction_id)
+                except Exception:
+                    # queued_at уже сдвинут: следующий beat-проход попробует
+                    # снова после полного stale-интервала.
+                    logger.exception(
+                        "Could not recover queued transaction %s",
+                        transaction_id,
+                    )
+
+            if requeue_ids or failed_ids:
+                logger.warning(
+                    "Queue recovery finished: requeued=%s failed=%s",
+                    len(requeue_ids),
+                    len(failed_ids),
+                )
         finally:
             await AsyncORM.close()
 
