@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import and_, select, func
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     async_sessionmaker,
@@ -269,6 +269,51 @@ class AsyncORM:
             .with_for_update(skip_locked=True)
         )
         return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_transaction_processing_summary(
+        cls,
+        session: AsyncSession,
+        *,
+        stale_before: datetime,
+    ) -> dict:
+        """Вернуть агрегированное состояние фоновой обработки одним запросом."""
+        status = Transaction.processing_status
+        queued = status == "queued"
+        failed = status == "failed"
+        result = await session.execute(
+            select(
+                func.count(Transaction.id).label("total"),
+                func.count(Transaction.id).filter(queued).label("queued"),
+                func.count(Transaction.id)
+                .filter(status == "completed")
+                .label("completed"),
+                func.count(Transaction.id)
+                .filter(status == "rejected")
+                .label("rejected"),
+                func.count(Transaction.id).filter(failed).label("failed"),
+                func.count(Transaction.id)
+                .filter(and_(queued, Transaction.queued_at <= stale_before))
+                .label("stale_queued"),
+                func.count(Transaction.id)
+                .filter(and_(failed, Transaction.failure_notified_at.is_(None)))
+                .label("unnotified_failures"),
+                func.min(Transaction.queued_at)
+                .filter(queued)
+                .label("oldest_queued_at"),
+            )
+        )
+        row = result.one()
+        return {
+            "total": row.total,
+            "queued": row.queued,
+            "completed": row.completed,
+            "rejected": row.rejected,
+            "failed": row.failed,
+            "stale_queued": row.stale_queued,
+            "unnotified_failures": row.unnotified_failures,
+            "oldest_queued_at": row.oldest_queued_at,
+        }
 
     @classmethod
     async def get_transaction_history(

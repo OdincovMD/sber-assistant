@@ -16,12 +16,13 @@ from app.services.transaction_type import normalize_transaction_type
 from app.services.vk_client import VkBotClient
 from app.services.analyst_service import FinancialAnalyst
 from app.services.failure_alerts import build_transaction_failure_alert
+from app.services.processing_health import get_queue_stale_minutes
 
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-QUEUE_STALE_MINUTES = int(os.getenv("QUEUE_STALE_MINUTES", "10"))
+QUEUE_STALE_MINUTES = get_queue_stale_minutes()
 QUEUE_RECOVERY_MAX_ATTEMPTS = int(
     os.getenv("QUEUE_RECOVERY_MAX_ATTEMPTS", "3")
 )

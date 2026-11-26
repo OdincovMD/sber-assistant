@@ -81,6 +81,21 @@ class TransactionHistoryResponse(BaseModel):
     offset: int
 
 
+class TransactionProcessingSummaryResponse(BaseModel):
+    """Оперативная сводка состояния фоновой обработки транзакций."""
+    health: Literal["ok", "degraded", "critical"]
+    generated_at: datetime
+    stale_after_minutes: int
+    total: int
+    queued: int
+    completed: int
+    rejected: int
+    failed: int
+    stale_queued: int
+    unnotified_failures: int
+    oldest_queued_at: Optional[datetime] = None
+
+
 class TransactionRetryResponse(BaseModel):
     """Результат повторной постановки транзакции в очередь."""
     status: Literal["queued"] = "queued"

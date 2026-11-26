@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,8 +12,13 @@ from app.db import AsyncORM
 from app.schemas import (
     AccountType,
     TransactionHistoryResponse,
+    TransactionProcessingSummaryResponse,
     TransactionRetryResponse,
     TransactionStatusResponse,
+)
+from app.services.processing_health import (
+    determine_processing_health,
+    get_queue_stale_minutes,
 )
 
 
@@ -91,6 +96,34 @@ async def get_transaction_history(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/transactions/summary",
+    response_model=TransactionProcessingSummaryResponse,
+)
+async def get_transaction_processing_summary(
+    db: AsyncSession = Depends(AsyncORM.get_db),
+):
+    """Вернуть одно агрегированное состояние очереди и ошибок обработки."""
+    generated_at = datetime.now(timezone.utc)
+    stale_after_minutes = get_queue_stale_minutes()
+    summary = await AsyncORM.get_transaction_processing_summary(
+        db,
+        stale_before=generated_at - timedelta(minutes=stale_after_minutes),
+    )
+    health = determine_processing_health(
+        queued=summary["queued"],
+        stale_queued=summary["stale_queued"],
+        failed=summary["failed"],
+        unnotified_failures=summary["unnotified_failures"],
+    )
+    return TransactionProcessingSummaryResponse(
+        health=health,
+        generated_at=generated_at,
+        stale_after_minutes=stale_after_minutes,
+        **summary,
     )
 
 

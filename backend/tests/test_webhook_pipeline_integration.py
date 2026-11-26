@@ -444,6 +444,12 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
 
     def test_stale_queued_transaction_is_recovered_then_failed(self):
         sms_text = "25.11.2026 18:00 Сообщение для проверки очереди"
+        with TestClient(app) as client:
+            empty_summary = client.get("/api/transactions/summary").json()
+        self.assertEqual(empty_summary["health"], "ok")
+        self.assertEqual(empty_summary["total"], 0)
+        self.assertIsNone(empty_summary["oldest_queued_at"])
+
         with patch.object(process_sms_task, "delay") as initial_delay:
             with TestClient(app) as client:
                 response = client.post(
@@ -461,11 +467,25 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             initially_queued = client.get(
                 f"/api/transactions/{transaction_id}"
             ).json()
+            queued_summary = client.get(
+                "/api/transactions/summary"
+            ).json()
         self.assertEqual(initially_queued["status"], "queued")
         self.assertEqual(initially_queued["queue_recovery_attempts"], 0)
         self.assertIsNotNone(initially_queued["queued_at"])
+        self.assertEqual(queued_summary["health"], "degraded")
+        self.assertEqual(queued_summary["queued"], 1)
+        self.assertEqual(queued_summary["stale_queued"], 0)
+        self.assertIsNotNone(queued_summary["oldest_queued_at"])
 
         asyncio.run(self._make_transaction_stale(transaction_id, 0))
+        with TestClient(app) as client:
+            stale_summary = client.get(
+                "/api/transactions/summary"
+            ).json()
+        self.assertEqual(stale_summary["health"], "critical")
+        self.assertEqual(stale_summary["stale_queued"], 1)
+
         with patch.object(process_sms_task, "delay") as recovery_delay:
             recover_stale_transactions.run()
         recovery_delay.assert_called_once_with(transaction_id)
@@ -492,6 +512,9 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             exhausted = client.get(
                 f"/api/transactions/{transaction_id}"
             ).json()
+            failed_summary = client.get(
+                "/api/transactions/summary"
+            ).json()
         self.assertEqual(exhausted["status"], "failed")
         self.assertEqual(
             exhausted["error"],
@@ -499,6 +522,9 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             f"{QUEUE_RECOVERY_MAX_ATTEMPTS} automatic recovery attempts",
         )
         self.assertIsNotNone(exhausted["processed_at"])
+        self.assertEqual(failed_summary["health"], "critical")
+        self.assertEqual(failed_summary["failed"], 1)
+        self.assertEqual(failed_summary["unnotified_failures"], 1)
 
     def test_payment_before_purchase_is_carried_forward(self):
         self._deliver_and_process(
