@@ -523,7 +523,7 @@ def send_failed_transaction_alerts():
                         await session.rollback()
                         logger.exception(
                             "Could not send failure alert for transaction %s",
-                            transaction.id,
+                            transaction_id,
                         )
                         continue
 
@@ -531,7 +531,7 @@ def send_failed_transaction_alerts():
                     await session.commit()
                     logger.warning(
                         "Failure alert sent for transaction %s",
-                        transaction.id,
+                        transaction_id,
                     )
         finally:
             try:
