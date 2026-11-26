@@ -2,7 +2,7 @@ import asyncio
 import os
 import unittest
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 RUN_INTEGRATION_TESTS = os.getenv("RUN_INTEGRATION_TESTS") == "1"
 
@@ -17,6 +17,8 @@ if RUN_INTEGRATION_TESTS:
         QUEUE_RECOVERY_MAX_ATTEMPTS,
         process_sms_task,
         recover_stale_transactions,
+        send_failed_transaction_alerts,
+        settings,
     )
 
 
@@ -362,6 +364,83 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
             "Background processing failed: RuntimeError",
         )
         self.assertIsNotNone(status["processed_at"])
+
+    def test_failed_transaction_alert_retries_and_is_sent_once(self):
+        sms_text = "26.11.2026 PRIVATE SMS MUST NOT LEAK"
+        with patch.object(process_sms_task, "delay"):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={
+                        "Idempotency-Key": "integration-failure-alert-2026-11-26"
+                    },
+                )
+
+        transaction_id = response.json()["transaction_id"]
+        parse_sms = AsyncMock(return_value=(None, "not-json"))
+        with patch.object(ollama_client, "parse_sms", new=parse_sms):
+            process_sms_task.run(transaction_id)
+
+        failed_vk = MagicMock()
+        failed_vk.send_message = AsyncMock(
+            side_effect=RuntimeError("VK unavailable")
+        )
+        failed_vk.close = AsyncMock()
+        with (
+            patch.object(settings, "vk_bot_token", "integration-token"),
+            patch.object(settings, "vk_user_id", 123),
+            patch(
+                "app.tasks.celery_worker.VkBotClient",
+                return_value=failed_vk,
+            ),
+        ):
+            send_failed_transaction_alerts.run()
+
+        with TestClient(app) as client:
+            still_pending = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+        self.assertIsNone(still_pending["failure_notified_at"])
+        failed_vk.send_message.assert_awaited_once()
+        failed_vk.close.assert_awaited_once()
+
+        successful_vk = MagicMock()
+        successful_vk.send_message = AsyncMock(return_value={"response": 1})
+        successful_vk.close = AsyncMock()
+        with (
+            patch.object(settings, "vk_bot_token", "integration-token"),
+            patch.object(settings, "vk_user_id", 123),
+            patch(
+                "app.tasks.celery_worker.VkBotClient",
+                return_value=successful_vk,
+            ),
+        ):
+            send_failed_transaction_alerts.run()
+            send_failed_transaction_alerts.run()
+
+        successful_vk.send_message.assert_awaited_once()
+        alert_message = successful_vk.send_message.await_args.args[0]
+        self.assertIn(f"ID: {transaction_id}", alert_message)
+        self.assertIn("LLM response could not be parsed", alert_message)
+        self.assertNotIn(sms_text, alert_message)
+
+        with TestClient(app) as client:
+            notified = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+            with patch.object(process_sms_task, "delay") as retry_delay:
+                retry_response = client.post(
+                    f"/api/transactions/{transaction_id}/retry"
+                )
+            retried = client.get(
+                f"/api/transactions/{transaction_id}"
+            ).json()
+
+        self.assertIsNotNone(notified["failure_notified_at"])
+        self.assertEqual(retry_response.status_code, 202)
+        retry_delay.assert_called_once_with(transaction_id)
+        self.assertIsNone(retried["failure_notified_at"])
 
     def test_stale_queued_transaction_is_recovered_then_failed(self):
         sms_text = "25.11.2026 18:00 Сообщение для проверки очереди"

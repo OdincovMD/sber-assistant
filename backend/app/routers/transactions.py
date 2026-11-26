@@ -33,6 +33,7 @@ def _to_response(transaction) -> TransactionStatusResponse:
         queued_at=transaction.queued_at,
         queue_recovery_attempts=transaction.queue_recovery_attempts,
         processed_at=transaction.processed_at,
+        failure_notified_at=transaction.failure_notified_at,
         account_type=_enum_value(transaction.account_type),
         amount=(
             float(transaction.amount)
@@ -138,6 +139,7 @@ async def retry_failed_transaction(
     transaction.processed_at = None
     transaction.queued_at = datetime.now(timezone.utc)
     transaction.queue_recovery_attempts = 0
+    transaction.failure_notified_at = None
 
     # Worker должен увидеть статус queued до публикации задачи в Redis.
     await db.commit()

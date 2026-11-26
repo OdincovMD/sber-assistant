@@ -15,6 +15,7 @@ from app.services.transaction_datetime import parse_transaction_datetime
 from app.services.transaction_type import normalize_transaction_type
 from app.services.vk_client import VkBotClient
 from app.services.analyst_service import FinancialAnalyst
+from app.services.failure_alerts import build_transaction_failure_alert
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ QUEUE_RECOVERY_MAX_ATTEMPTS = int(
 )
 QUEUE_RECOVERY_BATCH_SIZE = int(
     os.getenv("QUEUE_RECOVERY_BATCH_SIZE", "100")
+)
+FAILURE_ALERT_BATCH_SIZE = int(
+    os.getenv("FAILURE_ALERT_BATCH_SIZE", "20")
 )
 
 # Маппинг строки type → enum
@@ -72,6 +76,10 @@ celery_app.conf.beat_schedule = {
     },
     "recover-stale-transactions": {
         "task": "app.tasks.celery_worker.recover_stale_transactions",
+        "schedule": crontab(minute="*/5"),
+    },
+    "notify-failed-transactions": {
+        "task": "app.tasks.celery_worker.send_failed_transaction_alerts",
         "schedule": crontab(minute="*/5"),
     },
 }
@@ -460,6 +468,77 @@ def recover_stale_transactions():
                 )
         finally:
             await AsyncORM.close()
+
+    asyncio.run(_inner())
+
+
+@celery_app.task(name="app.tasks.celery_worker.send_failed_transaction_alerts")
+def send_failed_transaction_alerts():
+    """Уведомить через VK о новых окончательно упавших транзакциях."""
+    if (
+        not settings.vk_bot_token
+        or settings.vk_bot_token == "YOUR_VK_BOT_TOKEN"
+        or not settings.vk_user_id
+    ):
+        logger.info("Failed transaction alerts are disabled: VK is not configured")
+        return
+
+    async def _inner():
+        await AsyncORM.init()
+        vk = None
+        try:
+            vk = VkBotClient(
+                settings.vk_bot_token,
+                settings.vk_user_id,
+                settings.vk_api_version,
+            )
+            async with AsyncORM.get_session()() as lookup_session:
+                transaction_ids = (
+                    await AsyncORM.get_unnotified_failed_transaction_ids(
+                        lookup_session,
+                        limit=FAILURE_ALERT_BATCH_SIZE,
+                    )
+                )
+
+            for transaction_id in transaction_ids:
+                async with AsyncORM.get_session()() as session:
+                    transaction = (
+                        await AsyncORM.claim_failed_transaction_for_notification(
+                            session,
+                            transaction_id,
+                        )
+                    )
+                    if transaction is None:
+                        continue
+
+                    message = build_transaction_failure_alert(
+                        transaction_id=transaction.id,
+                        created_at=transaction.created_at,
+                        error=transaction.processing_error,
+                        recovery_attempts=transaction.queue_recovery_attempts,
+                    )
+                    try:
+                        await vk.send_message(message)
+                    except Exception:
+                        await session.rollback()
+                        logger.exception(
+                            "Could not send failure alert for transaction %s",
+                            transaction.id,
+                        )
+                        continue
+
+                    transaction.failure_notified_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    logger.warning(
+                        "Failure alert sent for transaction %s",
+                        transaction.id,
+                    )
+        finally:
+            try:
+                if vk is not None:
+                    await vk.close()
+            finally:
+                await AsyncORM.close()
 
     asyncio.run(_inner())
 

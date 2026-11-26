@@ -234,6 +234,43 @@ class AsyncORM:
         return requeue_ids, failed_ids
 
     @classmethod
+    async def get_unnotified_failed_transaction_ids(
+        cls,
+        session: AsyncSession,
+        *,
+        limit: int,
+    ) -> list[int]:
+        """Вернуть failed-транзакции, о которых ещё не уведомили."""
+        result = await session.execute(
+            select(Transaction.id)
+            .where(
+                Transaction.processing_status == "failed",
+                Transaction.failure_notified_at.is_(None),
+            )
+            .order_by(Transaction.processed_at, Transaction.id)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    async def claim_failed_transaction_for_notification(
+        cls,
+        session: AsyncSession,
+        transaction_id: int,
+    ) -> Optional[Transaction]:
+        """Заблокировать ещё не оповещённую failed-транзакцию."""
+        result = await session.execute(
+            select(Transaction)
+            .where(
+                Transaction.id == transaction_id,
+                Transaction.processing_status == "failed",
+                Transaction.failure_notified_at.is_(None),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
     async def get_transaction_history(
         cls,
         session: AsyncSession,

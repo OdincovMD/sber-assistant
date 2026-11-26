@@ -60,6 +60,7 @@ class TransactionStatusResponse(BaseModel):
     queued_at: datetime
     queue_recovery_attempts: int
     processed_at: Optional[datetime] = None
+    failure_notified_at: Optional[datetime] = None
     account_type: Optional[str] = None
     amount: Optional[float] = None
     transaction_type: Optional[str] = None

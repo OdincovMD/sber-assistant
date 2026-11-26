@@ -56,6 +56,11 @@ class Transaction(Base):
             "processing_status",
             "queued_at",
         ),
+        Index(
+            "ix_transactions_failure_notifications",
+            "processing_status",
+            "failure_notified_at",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -109,6 +114,11 @@ class Transaction(Base):
         default=0,
         server_default="0",
         comment="Число автоматических повторных постановок в очередь",
+    )
+    failure_notified_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Время успешного уведомления об окончательной ошибке",
     )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
