@@ -170,6 +170,32 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         ):
             with TestClient(app) as client:
                 health_response = client.get("/health")
+                with (
+                    patch(
+                        "app.routers.health._redis_health_check",
+                        new=AsyncMock(return_value=True),
+                    ),
+                    patch.object(
+                        ollama_client,
+                        "is_model_loaded",
+                        new=AsyncMock(return_value=True),
+                    ),
+                ):
+                    readiness_response = client.get("/health/ready")
+
+                with (
+                    patch(
+                        "app.routers.health._redis_health_check",
+                        new=AsyncMock(return_value=False),
+                    ),
+                    patch.object(
+                        ollama_client,
+                        "is_model_loaded",
+                        new=AsyncMock(return_value=True),
+                    ),
+                ):
+                    unavailable_response = client.get("/health/ready")
+
                 missing_key = client.get("/api/transactions")
                 wrong_key = client.get(
                     "/api/transactions",
@@ -182,6 +208,18 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
                 openapi = client.get("/openapi.json")
 
         self.assertEqual(health_response.status_code, 200)
+        self.assertEqual(readiness_response.status_code, 200)
+        self.assertEqual(readiness_response.json()["status"], "ready")
+        self.assertEqual(
+            set(readiness_response.json()["checks"]),
+            {"postgres", "redis", "ollama_model"},
+        )
+        self.assertEqual(unavailable_response.status_code, 503)
+        self.assertEqual(unavailable_response.json()["status"], "not_ready")
+        self.assertEqual(
+            unavailable_response.json()["checks"]["redis"]["status"],
+            "error",
+        )
         self.assertEqual(missing_key.status_code, 401)
         self.assertEqual(wrong_key.status_code, 401)
         self.assertEqual(wrong_key.headers["www-authenticate"], "ApiKey")

@@ -108,6 +108,20 @@ class HealthResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class DependencyHealthResponse(BaseModel):
+    """Состояние одной обязательной зависимости приложения."""
+    status: Literal["ok", "error"]
+    detail: str
+
+
+class ReadinessResponse(BaseModel):
+    """Готовность полного конвейера принимать и обрабатывать сообщения."""
+    status: Literal["ready", "not_ready"]
+    checked_at: datetime
+    timeout_seconds: float
+    checks: dict[str, DependencyHealthResponse]
+
+
 # ─── Finance ──────────────────────────────────────────────────
 
 class BonusStatusResponse(BaseModel):

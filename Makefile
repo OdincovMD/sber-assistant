@@ -31,6 +31,7 @@ ollama-pull:
 # Проверка здоровья
 health:
 	@echo "=== Backend ===" && curl -s http://localhost:$${NGINX_PORT:-80}/health | python3 -m json.tool
+	@echo "\n=== Readiness ===" && curl -s http://localhost:$${NGINX_PORT:-80}/health/ready | python3 -m json.tool
 	@echo "\n=== Database ===" && curl -s http://localhost:$${NGINX_PORT:-80}/health/db | python3 -m json.tool
 	@echo "\n=== Ollama ===" && curl -s http://localhost:$${NGINX_PORT:-80}/health/ollama | python3 -m json.tool
 
