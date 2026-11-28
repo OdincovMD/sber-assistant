@@ -185,6 +185,44 @@ class AsyncORM:
         return result.scalar_one_or_none()
 
     @classmethod
+    async def claim_failed_transactions_for_retry(
+        cls,
+        session: AsyncSession,
+        *,
+        limit: int,
+    ) -> list[Transaction]:
+        """Заблокировать ограниченную пачку failed-транзакций для retry."""
+        result = await session.execute(
+            select(Transaction)
+            .where(
+                Transaction.processing_status == "failed",
+                Transaction.is_parsed.is_not(True),
+            )
+            .order_by(Transaction.processed_at, Transaction.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    async def get_transactions_by_ids_for_update(
+        cls,
+        session: AsyncSession,
+        transaction_ids: list[int],
+    ) -> list[Transaction]:
+        """Повторно заблокировать строки и обновить их состояние из БД."""
+        if not transaction_ids:
+            return []
+        result = await session.execute(
+            select(Transaction)
+            .where(Transaction.id.in_(transaction_ids))
+            .order_by(Transaction.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list(result.scalars().all())
+
+    @classmethod
     async def claim_stale_queued_transactions(
         cls,
         session: AsyncSession,

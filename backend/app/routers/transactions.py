@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import AsyncORM
 from app.schemas import (
     AccountType,
+    BulkTransactionRetryResponse,
     TransactionHistoryResponse,
     TransactionProcessingSummaryResponse,
     TransactionRetryResponse,
@@ -19,6 +20,10 @@ from app.schemas import (
 from app.services.processing_health import (
     determine_processing_health,
     get_queue_stale_minutes,
+)
+from app.services.transaction_retry import (
+    mark_retry_queue_failure,
+    prepare_transaction_for_retry,
 )
 
 
@@ -127,6 +132,82 @@ async def get_transaction_processing_summary(
     )
 
 
+@router.post(
+    "/transactions/retry-failed",
+    response_model=BulkTransactionRetryResponse,
+    status_code=202,
+)
+async def retry_failed_transactions(
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(AsyncORM.get_db),
+):
+    """Повторно поставить ограниченную пачку failed-транзакций в очередь."""
+    from app.tasks.celery_worker import process_sms_task
+
+    transactions = await AsyncORM.claim_failed_transactions_for_retry(
+        db,
+        limit=limit,
+    )
+    if not transactions:
+        return BulkTransactionRetryResponse(
+            status="empty",
+            selected_count=0,
+            queued_count=0,
+            failed_count=0,
+            queued_ids=[],
+            failed_ids=[],
+        )
+
+    queued_at = datetime.now(timezone.utc)
+    transaction_ids = [transaction.id for transaction in transactions]
+    for transaction in transactions:
+        prepare_transaction_for_retry(transaction, queued_at=queued_at)
+
+    # Watchdog восстановит строки, если процесс завершится между commit и delay.
+    await db.commit()
+
+    queued_ids: list[int] = []
+    failed: dict[int, str] = {}
+    for transaction_id in transaction_ids:
+        try:
+            process_sms_task.delay(transaction_id)
+            queued_ids.append(transaction_id)
+        except Exception as exc:
+            logger.exception(
+                "Could not requeue transaction %s in bulk retry",
+                transaction_id,
+            )
+            failed[transaction_id] = type(exc).__name__
+
+    failed_ids = list(failed)
+    if failed_ids:
+        failed_at = datetime.now(timezone.utc)
+        failed_transactions = await AsyncORM.get_transactions_by_ids_for_update(
+            db,
+            failed_ids,
+        )
+        for transaction in failed_transactions:
+            # Старое Celery-сообщение могло успеть обработать строку, пока
+            # новая публикация падала. Не перезаписываем такой результат.
+            if transaction.processing_status != "queued" or transaction.is_parsed:
+                continue
+            mark_retry_queue_failure(
+                transaction,
+                failed_at=failed_at,
+                error_type=failed[transaction.id],
+            )
+        await db.commit()
+
+    return BulkTransactionRetryResponse(
+        status="partial" if failed_ids else "queued",
+        selected_count=len(transaction_ids),
+        queued_count=len(queued_ids),
+        failed_count=len(failed_ids),
+        queued_ids=queued_ids,
+        failed_ids=failed_ids,
+    )
+
+
 @router.get(
     "/transactions/{transaction_id}",
     response_model=TransactionStatusResponse,
@@ -167,12 +248,10 @@ async def retry_failed_transaction(
             detail="Only failed transactions can be retried",
         )
 
-    transaction.processing_status = "queued"
-    transaction.processing_error = None
-    transaction.processed_at = None
-    transaction.queued_at = datetime.now(timezone.utc)
-    transaction.queue_recovery_attempts = 0
-    transaction.failure_notified_at = None
+    prepare_transaction_for_retry(
+        transaction,
+        queued_at=datetime.now(timezone.utc),
+    )
 
     # Worker должен увидеть статус queued до публикации задачи в Redis.
     await db.commit()
@@ -184,12 +263,11 @@ async def retry_failed_transaction(
             "Could not requeue transaction %s",
             transaction.id,
         )
-        transaction.processing_status = "failed"
-        transaction.processing_error = (
-            "Background queue unavailable: "
-            f"{type(exc).__name__}"
+        mark_retry_queue_failure(
+            transaction,
+            failed_at=datetime.now(timezone.utc),
+            error_type=type(exc).__name__,
         )
-        transaction.processed_at = datetime.now(timezone.utc)
         await db.commit()
         raise HTTPException(
             status_code=503,

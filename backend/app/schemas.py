@@ -102,6 +102,16 @@ class TransactionRetryResponse(BaseModel):
     transaction_id: int
 
 
+class BulkTransactionRetryResponse(BaseModel):
+    """Результат пакетной повторной постановки failed-транзакций."""
+    status: Literal["queued", "partial", "empty"]
+    selected_count: int
+    queued_count: int
+    failed_count: int
+    queued_ids: list[int]
+    failed_ids: list[int]
+
+
 class HealthResponse(BaseModel):
     """Ответ health check."""
     status: str

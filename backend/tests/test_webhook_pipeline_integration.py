@@ -163,6 +163,24 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(status_response.json()["processed_at"])
         return transaction_id
 
+    def _deliver_and_fail(self, sms_text, idempotency_key):
+        with patch.object(process_sms_task, "delay") as delay:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sber-webhook",
+                    json={"sms_text": sms_text},
+                    headers={"Idempotency-Key": idempotency_key},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        transaction_id = response.json()["transaction_id"]
+        delay.assert_called_once_with(transaction_id)
+
+        parse_sms = AsyncMock(return_value=(None, "not-json"))
+        with patch.object(ollama_client, "parse_sms", new=parse_sms):
+            process_sms_task.run(transaction_id)
+        return transaction_id
+
     def test_api_key_protects_financial_routes_but_not_health(self):
         with patch.dict(
             os.environ,
@@ -368,6 +386,103 @@ class WebhookPipelineIntegrationTests(unittest.TestCase):
         self.assertIn("Превышение лимита", status["error"])
         self.assertEqual(status["amount"], 200000.0)
         self.assertEqual(periods, [])
+
+    def test_bulk_retry_limits_batch_and_reports_partial_queue_failure(self):
+        transaction_ids = [
+            self._deliver_and_fail(
+                f"28.11.2026 Ошибка обработки {index}",
+                f"integration-bulk-retry-{index}-2026-11-28",
+            )
+            for index in range(3)
+        ]
+        queue_failure_id = transaction_ids[1]
+
+        def publish_with_one_failure(transaction_id):
+            if transaction_id == queue_failure_id:
+                raise RuntimeError("Redis unavailable")
+
+        with patch.object(
+            process_sms_task,
+            "delay",
+            side_effect=publish_with_one_failure,
+        ) as first_bulk_delay:
+            with TestClient(app) as client:
+                first_response = client.post(
+                    "/api/transactions/retry-failed",
+                    params={"limit": 2},
+                )
+                first_statuses = {
+                    transaction_id: client.get(
+                        f"/api/transactions/{transaction_id}"
+                    ).json()
+                    for transaction_id in transaction_ids
+                }
+
+        self.assertEqual(first_response.status_code, 202)
+        self.assertEqual(
+            first_response.json(),
+            {
+                "status": "partial",
+                "selected_count": 2,
+                "queued_count": 1,
+                "failed_count": 1,
+                "queued_ids": [transaction_ids[0]],
+                "failed_ids": [queue_failure_id],
+            },
+        )
+        self.assertEqual(first_bulk_delay.call_count, 2)
+        self.assertEqual(
+            first_statuses[transaction_ids[0]]["status"],
+            "queued",
+        )
+        self.assertEqual(first_statuses[queue_failure_id]["status"], "failed")
+        self.assertEqual(
+            first_statuses[queue_failure_id]["error"],
+            "Background queue unavailable: RuntimeError",
+        )
+        self.assertEqual(
+            first_statuses[transaction_ids[2]]["status"],
+            "failed",
+        )
+
+        with patch.object(process_sms_task, "delay") as second_bulk_delay:
+            with TestClient(app) as client:
+                second_response = client.post(
+                    "/api/transactions/retry-failed",
+                    params={"limit": 100},
+                )
+                empty_response = client.post(
+                    "/api/transactions/retry-failed"
+                )
+                invalid_limit = client.post(
+                    "/api/transactions/retry-failed",
+                    params={"limit": 0},
+                )
+                summary = client.get("/api/transactions/summary").json()
+
+        self.assertEqual(second_response.status_code, 202)
+        self.assertEqual(second_response.json()["status"], "queued")
+        self.assertEqual(second_response.json()["selected_count"], 2)
+        self.assertEqual(
+            set(second_response.json()["queued_ids"]),
+            {queue_failure_id, transaction_ids[2]},
+        )
+        self.assertEqual(second_bulk_delay.call_count, 2)
+        self.assertEqual(
+            empty_response.json(),
+            {
+                "status": "empty",
+                "selected_count": 0,
+                "queued_count": 0,
+                "failed_count": 0,
+                "queued_ids": [],
+                "failed_ids": [],
+            },
+        )
+        self.assertEqual(invalid_limit.status_code, 422)
+        self.assertEqual(summary["queued"], 3)
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(summary["health"], "degraded")
 
     def test_worker_exception_is_persisted_as_failed_status(self):
         sms_text = "19.11.2026 15:00 Сообщение для проверки сбоя"
